@@ -2933,73 +2933,7 @@ type
   {$endif USE_METAFILE}
 
    {$ifdef USE_BITMAP}
-  // pattern/texture handle: a texture into XObject Form; a pattern into Pattern and after that into XObject Form
-  // example:
-  // Page Resources:  Resources<</Font<<>>/XObject<</SynImg0 6 0 R/SynT_0 7 0 R/SynImg2 8 0 R/SynT_2 10 0 R>>/Pattern<</SynPat_1 9 0 R>>/ProcSet[/PDF/Text/ImageC]>>/Contents 5 0 R>>
-  // Texture /SynT_0 7 0 R
-  //                 7 0 obj
-  //                 <</Length 479/Type/XObject/Subtype/Form/BBox[-496 -496 1302 1178]/Matrix [1 0 0 1 0 0]/Resources<</Font<<>>/ProcSet[/PDF/Text/ImageC]/XObject<</SynImg0 6 0 R>>>>/Name/SynT_0>>
-  //                  stream
-  //                  q
-  //                  2.419135 0.000000 0.000000 -2.365376 0.000000 7.096128 cm
-  //                  ...  TilesPerX x TilesPerY times
-  //                  /SynImg0 Do
-  //                  ...
-  //                  endstream
-  //                endobj
-  //   where SynImg0 is TextureBitmap registered as PdfImage
-  //                 6 0 obj
-  //                 <</Length 11532/Type/XObject/Subtype/Image/ColorSpace/DeviceRGB/Width 62/Height 62/BitsPerComponent 8/Name/SynImg0>>
-  //                 stream
-  //                  ... Bitmap data
-  //                 endstream
-  //                 endobj
-  // Pattern /SynPat_1 9 0 R
-  //                 9 0 obj
-  //                  <</Length 131/Type/Pattern/PaintType 1/PatternType 1/TilingType 1/XStep 46.715023/YStep 3.397456/BBox[0.000 0.000 46.715023 3.397456]/Resources<</ProcSet[/PDF/Text/ImageB]/XObject<</SynImg2 8 0 R>>/ColorSpace<</CS1[/Pattern/DeviceRGB]>>>>/Name/SynPat_1>>
-  //                   stream
-  //                   q
-  //                   .. pdf scale Transform cm
-  //                   .. Pattern scale +FlipY Transform cm
-  //                  /SynImg2 Do
-  //                  Q
-  //                  endstream
-  //                  endobj
-  // where SynImg2 is TextureBitmap registered as PdfImage
-  //                  8 0 obj
-  //                  <</Length 375/Type/XObject/Subtype/Image/ColorSpace/DeviceRGB/Width 1/Height 125/BitsPerComponent 8/Name/SynImg2>>
-  // Texture defined on the base of dimensionless Pattern
-  //                  10 0 obj
-  //                  <</Length 128/Type/XObject/Subtype/Form/BBox[-49 -49 144 101]/Matrix [1 0 0 1 0 0]/Resources<</Font<<>>/ProcSet[/PDF/Text/ImageC]/Pattern<</SynPat_1 9 0 R>>>>/Name/SynT_2>>
-  //                  stream
-  //                  q
-  //                   ... pdf Scale Transform cm
-  //                  /Pattern cs
-  //                  /SynPat_1 scn
-  //                  0.000000 0.000000 5.992000 5.992000 re
-  //                  f
-  //                  Q
-  //                  endstream
-  //                  endobj
-  //
-  // usage in content stream (Transformation matrix are depended to shape):
-  // Texture /SynT_0 7 0 R
-  //              q
-  //              n
-  //              ... Scale + Translate transform  cm
-  //              /SynT_0 Do
-  //              f
-  //              Q
-  // XObject Form from Texture based on a pattern /SynT_2 10 0 R
-  //              q
-  //              n
-  //              ... Rotation + translate Transform  cm
-  //              /SynT_2 Do
-  //              f
-  //              Q
-
-
-
+  
    TPdfPattern = class(TPdfXObject)
   private
     FPage: TPdfPage;
