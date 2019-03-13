@@ -455,6 +455,7 @@ type
     /// Number of encoding subtables
     numberSubtables: word;
   end;
+  TPdfPatternType = (pptPattern, pptTexture);
   /// points to every 'cmap' encoding subtables
   TCmapSubTableArray = packed array[byte] of packed record
     /// Platform identifier
@@ -514,6 +515,14 @@ type
     entrySelector: word;
     rangeShift: word;
   end;
+  TSynWrapMode = (
+    SynWrapModeTile,        // 0
+    SynWrapModeTileFlipX,   // 1
+    SynWrapModeTileFlipY,   // 2
+    SynWrapModeTileFlipXY,  // 3
+    SynWrapModeClamp        // 4
+  );
+
 
 type
   /// the PDF library use internaly AnsiString text encoding
@@ -594,6 +603,9 @@ type
   // - maps COLORREF / TColorRef as used e.g. under windows
   TPdfColorRGB = cardinal;
 
+  /// the recognized families of the Standard 14 Fonts
+  TPdfFontStandard = (pfsTimes, pfsHelvetica, pfsCourier);
+
   /// numerical ID for every XObject
   TXObjectID = integer;
 
@@ -663,6 +675,10 @@ type
   TPdfFont = class;
   TPdfFontTrueType = class;
   TPdfDocument = class;
+
+{$ifdef USE_BITMAP}
+  TPdfPattern = class;
+{$endif USE_BITMAP}
 
 {$ifdef USE_PDFSECURITY}
   /// the available encryption levels
@@ -803,7 +819,7 @@ type
     function Add(Value, DigitCount: Integer): TPdfWrite; overload;
     /// add a floating point numerical value to the buffer
     // - up to 2 decimals are written
-    function Add(Value: TSynExtended): TPdfWrite; overload;
+    function Add(Value: TSynExtended; Decimals: cardinal=2): TPdfWrite; overload;
     /// add a floating point numerical value to the buffer
     // - up to 2 decimals are written, together with a trailing space
     function AddWithSpace(Value: TSynExtended): TPdfWrite; overload;
@@ -970,11 +986,15 @@ type
   TPdfReal = class(TPdfObject)
   private
     FValue: double;
+    // decimals property - to be able pattern box define more accurately than 2 decimals places
+    fDecimals:cardinal;
   protected
     procedure InternalWriteTo(W: TPdfWrite); override;
   public
-    constructor Create(AValue: double); reintroduce;
+    constructor Create(AValue: double; aDecimals: cardinal=2); reintroduce;
     property Value: double read FValue write FValue;
+    property Decimals: cardinal read fDecimals write fDecimals;
+
   end;
 
   /// a PDF object, storing a textual value
@@ -1075,7 +1095,7 @@ type
       const AArray: array of PDFString); reintroduce; overload;
     /// create an array of PDF objects, with some specified TPdfReal values
     constructor CreateReals(AObjectMgr: TPdfObjectMgr;
-      const AArray: array of double); reintroduce; overload;
+      const AArray: array of double; aDecimals: cardinal=2); reintroduce; overload;
     /// release the instance memory, and all embedded objects instances
     destructor Destroy; override;
     /// Add a PDF object to the array
@@ -1170,6 +1190,9 @@ type
     procedure AddItem(const AKey, AValue: PDFString); overload; {$ifdef HASINLINE}inline;{$endif}
     /// add a specified Key / Value pair (of type TPdfNumber) to the dictionary
     procedure AddItem(const AKey: PDFString; AValue: integer); overload; {$ifdef HASINLINE}inline;{$endif}
+    procedure AddItem(const AKey: PDFString; AValue: boolean); overload; {$ifdef HASINLINE}inline;{$endif}
+    procedure AddItem(const AKey: PDFString; AValue: single; aDecimals: cardinal=2); overload; {$ifdef HASINLINE}inline;{$endif}
+
     /// add a specified Key / Value pair (of type TPdfText) to the dictionary
     procedure AddItemText(const AKey, AValue: PDFString); overload; {$ifdef HASINLINE}inline;{$endif}
     /// add a specified Key / Value pair (of type TPdfTextUTF8) to the dictionary
@@ -1330,12 +1353,40 @@ type
   /// generic PDF Optional Content entry
   TPdfOptionalContentGroup = class(TPdfDictionary);
 
+  // record of textures/patterns bitmap with unique identifiers
+  TTextureBMP = record
+    textureID : word;
+    textureMS : THeapMemoryStream;
+  end;
+
+  TTextureDetail=record
+    textureID : word;
+    inheritFrom:Pdfstring;
+    textureName : pdfString;
+    patternType:TPdfPatternType;
+    TilesX    : word;
+    TilesY    : word;
+    XF        : XForm;
+    angle     : single;    // after flipY
+    quadrant  : integer ;  // to avoid unaccurancy for PI/2 multiplier
+    originscaleX : single; // before flipY
+    originscaleY : single; // before flipY
+    scaleX    : single;    // after flipY
+    scaleY    : single;    // after flipY
+    WrapMode  : TSynWrapMode;
+    Width, Height : single;
+  end;
+
+
+
   TPdfInfo = class;
   TPdfCatalog = class;
   TPdfDestination = class;
   TPdfOutlineEntry = class;
   TPdfOutlineRoot = class;
   TPdfPage = class;
+  TPdfFormWithCanvas = class;
+
   TPdfPageClass = class of TPdfPage;
 
   /// potential font styles
@@ -1359,6 +1410,10 @@ type
     FOutlineRoot: TPdfOutlineRoot;
     FStructTree: TPdfDictionary;
     FXObjectList: TPdfArray;
+    // array of predefined pattern/texture bitmaps stored as Memory stream
+    fTextureBMPs : array of TTextureBMP;
+    fTextureList : array of TTextureDetail;
+    FPatternList: TPdfArray;
     FDefaultPageWidth: cardinal;
     FDefaultPageHeight: Cardinal;
     FDefaultPaperSize: TPDFPaperSize;
@@ -1425,8 +1480,6 @@ type
     // - use the Naming Table ('name') of the TTF content if not 7 bit ascii
     function TTFFontPostcriptName(aFontIndex: integer; AStyle: TPdfFontStyles;
       AFont: TPdfFontTrueType): PDFString;
-    /// if ANSI_CHARSET is used, create a standard embedded font
-    function CreateEmbeddedFont(const FontName: RawUTF8): TPdfFont;
     /// register the font in the font list
     procedure RegisterFont(aFont: TPdfFont);
     /// get the PDF font, from its internal PDF name (e.g. 'Helvetica-Bold')
@@ -1482,6 +1535,31 @@ type
     /// add then register an object (typicaly a TPdfImage) to the PDF document
     // - returns the internal index as added in FXObjectList[]
     function AddXObject(const AName: PDFString; AXObject: TPdfXObject): integer;
+    /// register an pattern to the PDF document
+
+    {$ifdef USE_BITMAP}
+    // add bitmap stored in MemoryStream include its unique identifier into TextureBMPs array
+    procedure addTextureBMPs(pID:word;pMS:THeapMemoryStream);
+    // bitmap stored in TextureBMPs array into canvas.TextureBitmap
+    procedure setTextureBMPs(pId:word);
+    // returns index of Pattern/Texture from TextureList[] - if pattern(dimensionless)/ texture is missing it is created
+    function createOrGetTexture(aTextureID: word; aPatternType: TPdfPatternType; aTilesX,aTilesY: word; aWrapMode:TSynWrapMode; aScaleX,aScaleY,aAngle:single; aWidth:single=0; aHeight:single=0):word;
+    // returns index of Pattern/Texture from TextureList[] - if texture is missing it is created as copy of TTextureDetail
+    function copyorGetTextureDetail(aTextureDetail:TTextureDetail; aPatternType: TPdfPatternType;aWidth,aHeight : single;aInheritFrom:pdfString): word;
+    // unique name of Pattern/Texture  Pattern 'SynPat_' + TextureObjectID; Texture 'SynT_' + TextureObjectID where
+    // TextureObjectID is index of Texture from a TextureList[]
+    function getTextureDetailName(aTextureDetail:TTextureDetail; aPatternType: TPdfPatternType; aWidth,aHeight : single): PdfString;
+    // returns index of Pattern/Texture from TextureList[]; if missing returns -1
+    function GetTextureDetailIdx(aTextureID: word; aPatternType: TPdfPatternType; aTilesX,aTilesY: word; aWrapMode:TSynWrapMode; aScaleX,aScaleY,aAngle:single; aWidth:single; aHeight:single; pTestOrigin:boolean=false):SmallInt;
+    function getTextureDetail(pIdx: word):TTextureDetail;
+    /// register an pattern to the PDF document
+    // - returns the internal index as added in FPatternList[]
+    function RegisterPattern(AObject: TPdfPattern; const AName: PDFString): integer;
+    // add then register an pattern to the PDF document
+    function AddPattern(const AName: PDFString; APattern: TPdfPattern): integer;
+    {$endif USE_BITMAP}
+    /// add then register an object (form as XObject) to the PDF document
+    function AddFormTexture(const AName: PDFString; APattern: TPdfFormWithCanvas): integer;
     /// save the PDF file content into a specified Stream
     procedure SaveToStream(AStream: TStream; ForceModDate: TDateTime=0); virtual;
     /// prepare to save the PDF file content into a specified Stream
@@ -1509,6 +1587,11 @@ type
     /// retrieve a XObject from its name
     // - this method will handle also the Virtual Objects
     function GetXObject(const AName: PDFString): TPdfXObject;
+    /// retrieve a Pattern from its name
+    {$ifdef USE_BITMAP}
+    function GetPattern(const AName: PDFString): TPdfPattern;
+    {$endif USE_BITMAP}
+
     /// retrieve a XObject index from its name
     // - this method won't handle the Virtual Objects
     function GetXObjectIndex(const AName: PDFString): integer;
@@ -1518,6 +1601,8 @@ type
     // - uses 4 hash codes, created with 4 diverse seeds, in order to avoid
     // false positives
     function GetXObjectImageName(const Hash: THash128Rec; Width, Height: Integer): PDFString;
+    /// retrieve a XObject Texture/or pattern TPdfPattern index from its unique picture name
+    function GetPatternImageName(const aImageName: PDFString;aCanvas:TPdfCanvas): PDFString;
     {$endif USE_BITMAP}
     /// wrapper to create an annotation
     // - the annotation is set to a specified position of the current page
@@ -1806,6 +1891,17 @@ type
     FEmfBounds: TRect;
     FPrinterPxPerInch: TPoint;
     FNewPath: Boolean;
+    fUseTexture : boolean;
+    fTextureBitmap : TBitmap;
+    fTextureWrapMode : TSynWrapMode;
+    // pattern or texture
+    fPatternType : TPdfPatternType;
+    // for exact texture tiles
+    fTextureTilesX,
+    fTextureTilesY : word;
+    fTextureObjectID : word;
+    // texture/pattern transform matrix
+    fTextureXFORM : XFORM;
     {$ifdef USE_UNISCRIBE}
     /// if Uniscribe-related methods must handle the text from right to left
     fRightToLeftText: Boolean;
@@ -1846,6 +1942,7 @@ type
     procedure PointI(x, y: Single); {$ifdef HASINLINE}inline;{$endif}
     function RectI(Rect: TRect; Normalize: boolean): TPdfRect;
     procedure DrawXObjectPrepare(const AXObjectName: PDFString);
+    procedure DrawPatternPrepare(const APattern: PDFString);
     // wrappers about offset calculation
     function ViewOffsetX(X: Single): Single;
     function ViewOffsetY(Y: Single): Single;
@@ -1873,7 +1970,9 @@ type
     // to device coordinates
     // - since floating-point precision does make sense for a transformation
     // matrix, we added a custom decimal number parameter here
-    procedure ConcatToCTM(a, b, c, d, e, f: Single; Decimals: Cardinal=6); {  cm  }
+    procedure ConcatToCTM(a, b, c, d, e, f: Single; Decimals: Cardinal=6);overload; {  cm  }
+    procedure ConcatToCTM(aXForm: XForm; Decimals: Cardinal=6);overload;
+
 
     /// Set the flatness tolerance in the graphics state
     // - see Section 6.5.1, "Flatness Tolerance" of the PDF 1.3 reference:
@@ -1950,7 +2049,7 @@ type
     procedure CurveToY(x1, y1, x3, y3: Single);                  {  y   }
     /// Append a rectangle to the current path as a complete subpath, with
     // lower-left corner (x, y) and dimensions  width and  height in user space
-    procedure Rectangle(x, y, width, height: Single);            {  re  }
+    procedure Rectangle(x, y, width, height: Single;Decimals:cardinal=2);            {  re  }
     /// Close the current subpath by appending a straight line segment
     // from the current point to the starting point of the subpath
     // - This operator terminates the current subpath; appending another
@@ -2098,6 +2197,8 @@ type
     procedure ShowGlyph(PW: PWord; Count: integer); {$ifdef HASINLINE}inline;{$endif}
     /// Paint the specified XObject
     procedure ExecuteXObject(const xObject: PDFString);                   {  Do  }
+    /// Paint the specified Pattern
+    procedure ExecutePattern(const pattern: PDFString);
 
     /// Set the color space to a Device-dependent RGB value
     // - this method set the color to use for nonstroking operations
@@ -2107,7 +2208,7 @@ type
     procedure SetRGBStrokeColor(Value: TPdfColor);               {  RG  }
     /// Set the color space to a CMYK percent value
     // - this method set the color to use for nonstroking operations
-    procedure SetCMYKFillColor(C, M, Y, K: integer);                 {  k  }
+    procedure SetCMYKFillColor(C, M, Y, K: integer);              {  k  }
     /// Set the color space to a CMYK value
     // - this method set the color to use for stroking operations
     procedure SetCMYKStrokeColor(C, M, Y, K: integer);               {  K  }
@@ -2151,6 +2252,15 @@ type
     /// draw the specified object (typicaly an image) with stretching and clipping
     procedure DrawXObjectEx(X, Y, AWidth, AHeight: Single;
         ClipX, ClipY, ClipWidth, ClipHeight: Single; const AXObjectName: PDFString);
+    /// draw the specified pattern/texture with stretching
+    procedure DrawPattern(X, Y, AWidth, AHeight: Single;const AXObjectName: PDFString;
+        const APatternName: PDFString);
+    /// draw the specified pattern/texture with stretching and clipping
+    ///  (tricky - the metafile contains bitmap that should be replaced by texture/pattern) - it is convenient to
+    /// use bitmap as small as possible - 1 x 1 pixels
+    procedure DrawPatternEx(X, Y, AWidth, AHeight: Single;
+          ClipX, ClipY, ClipWidth, ClipHeight: Single; const AXObjectName: PDFString;const APatternName: PDFString);
+
     /// draw an ellipse
     // - use Bezier curves internaly to draw the ellipse
     procedure Ellipse(x, y, width, height: Single);
@@ -2197,6 +2307,9 @@ type
     procedure BeginMarkedContent(Group: TPdfOptionalContentGroup);
     // ends optional content (layer)
     procedure EndMarkedContent;
+
+    function getTextureName:pdfString;
+
   public
     /// retrieve the current Canvas content stream, i.e. where the PDF
     // commands are to be written to
@@ -2209,7 +2322,22 @@ type
     /// if Uniscribe-related methods must handle the text from right to left
     property RightToLeftText: Boolean read fRightToLeftText write fRightToLeftText;
 {$endif}
-  end;
+    // texture properties
+    property TextureBitmap : TBitmap read fTextureBitmap write fTextureBitmap;
+    property TextureXFORM : XFORM read fTextureXFORM write fTextureXFORM;
+    // pptPattern or pptTexture - texture is used for precise tiling
+    property PatternType : TPdfPatternType read fPatternType write fPatternType;
+    // used for patterntype=pptTexture - tiles per x
+    property TextureTilesX : word read fTextureTilesX write fTextureTilesX;
+    // used for patterntype=pptTexture - tiles per y
+    property TextureTilesY : word read fTextureTilesY write fTextureTilesY;
+    // unique Texture ID from TextureList[]
+    property TextureObjectID : word read fTextureObjectID write fTextureObjectID;
+    property TextureWrapMode : TSynWrapMode read fTextureWrapMode write fTextureWrapMode;
+    // useTexture=True means that  DrawBitmap procedure use TextureBitmap instead of B:TBitmap in its paramers
+    property UseTexture : boolean read fUseTexture write fUseTexture;
+
+ end;
 
   /// common ancestor to all dictionary wrapper classes
   TPdfDictionaryWrapper = class(TPersistent)
@@ -2236,8 +2364,32 @@ type
   // followed by the corresponding bookmark name
   // - use the GDIComment*() functions to append the corresponding
   // EMR_GDICOMMENT message to a metafile content
+  // pgcTextureBMP - in the form 'SI' + Unique identifier of bitmap pattern/texture( word=2bytes) + bitmap data
+  //                 ! the size of bitmapa cannot exceed 64000 bytes
+  //                 this comment - definition of pattern / texture bitmap has to be send before the comment
+  //                 containing command to replace bitmap in metafile with pattern/texture
+  // pgcTextureID - next bitmap(usually defined in EMR_STRETCHDIBITS) has to be replaced by texture
+  //                in the form 'ST'
+  //                            Unique identifier of bitmap texture(2bytes)
+  //                            Tiles per X(2Bytes)
+  //                            Tiles per Y(2Bytes)
+  //                            WrapMode(2bytes)
+  //                            ScaleX  (4 bytes) - single
+  //                            ScaleY  (4 bytes) - single
+  //                            Angle   (4 bytes) - single - in degrees
+  // pgcPatternID - next bitmap(usually defined in EMR_STRETCHDIBITS) has to be replaced by pattern
+  //                in the form 'SP'
+  //                            Unique identifier of bitmap pattern(2bytes)
+  //                            Tiles per X(2Bytes)  - usually 1
+  //                            Tiles per Y(2Bytes)  - usually 1
+  //                            WrapMode(2bytes)
+  //                            ScaleX  (4 bytes) - single
+  //                            ScaleY  (4 bytes) - single
+  //                            Angle   (4 bytes) - single - in degrees
+
+
   TPdfGDIComment =
-    (pgcOutline, pgcBookmark, pgcLink, pgcLinkNoBorder);
+    (pgcOutline, pgcBookmark, pgcLink, pgcLinkNoBorder,pgcTextureBMP, pgcTextureID,  pgcPatternID);
 
   /// a dictionary wrapper class for the PDF document information fields
   // - all values use the generic VCL string type, and will be encoded
@@ -2780,6 +2932,109 @@ type
   end;
   {$endif USE_METAFILE}
 
+   {$ifdef USE_BITMAP}
+  // pattern/texture handle: a texture into XObject Form; a pattern into Pattern and after that into XObject Form
+  // example:
+  // Page Resources:  Resources<</Font<<>>/XObject<</SynImg0 6 0 R/SynT_0 7 0 R/SynImg2 8 0 R/SynT_2 10 0 R>>/Pattern<</SynPat_1 9 0 R>>/ProcSet[/PDF/Text/ImageC]>>/Contents 5 0 R>>
+  // Texture /SynT_0 7 0 R
+  //                 7 0 obj
+  //                 <</Length 479/Type/XObject/Subtype/Form/BBox[-496 -496 1302 1178]/Matrix [1 0 0 1 0 0]/Resources<</Font<<>>/ProcSet[/PDF/Text/ImageC]/XObject<</SynImg0 6 0 R>>>>/Name/SynT_0>>
+  //                  stream
+  //                  q
+  //                  2.419135 0.000000 0.000000 -2.365376 0.000000 7.096128 cm
+  //                  ...  TilesPerX x TilesPerY times
+  //                  /SynImg0 Do
+  //                  ...
+  //                  endstream
+  //                endobj
+  //   where SynImg0 is TextureBitmap registered as PdfImage
+  //                 6 0 obj
+  //                 <</Length 11532/Type/XObject/Subtype/Image/ColorSpace/DeviceRGB/Width 62/Height 62/BitsPerComponent 8/Name/SynImg0>>
+  //                 stream
+  //                  ... Bitmap data
+  //                 endstream
+  //                 endobj
+  // Pattern /SynPat_1 9 0 R
+  //                 9 0 obj
+  //                  <</Length 131/Type/Pattern/PaintType 1/PatternType 1/TilingType 1/XStep 46.715023/YStep 3.397456/BBox[0.000 0.000 46.715023 3.397456]/Resources<</ProcSet[/PDF/Text/ImageB]/XObject<</SynImg2 8 0 R>>/ColorSpace<</CS1[/Pattern/DeviceRGB]>>>>/Name/SynPat_1>>
+  //                   stream
+  //                   q
+  //                   .. pdf scale Transform cm
+  //                   .. Pattern scale +FlipY Transform cm
+  //                  /SynImg2 Do
+  //                  Q
+  //                  endstream
+  //                  endobj
+  // where SynImg2 is TextureBitmap registered as PdfImage
+  //                  8 0 obj
+  //                  <</Length 375/Type/XObject/Subtype/Image/ColorSpace/DeviceRGB/Width 1/Height 125/BitsPerComponent 8/Name/SynImg2>>
+  // Texture defined on the base of dimensionless Pattern
+  //                  10 0 obj
+  //                  <</Length 128/Type/XObject/Subtype/Form/BBox[-49 -49 144 101]/Matrix [1 0 0 1 0 0]/Resources<</Font<<>>/ProcSet[/PDF/Text/ImageC]/Pattern<</SynPat_1 9 0 R>>>>/Name/SynT_2>>
+  //                  stream
+  //                  q
+  //                   ... pdf Scale Transform cm
+  //                  /Pattern cs
+  //                  /SynPat_1 scn
+  //                  0.000000 0.000000 5.992000 5.992000 re
+  //                  f
+  //                  Q
+  //                  endstream
+  //                  endobj
+  //
+  // usage in content stream (Transformation matrix are depended to shape):
+  // Texture /SynT_0 7 0 R
+  //              q
+  //              n
+  //              ... Scale + Translate transform  cm
+  //              /SynT_0 Do
+  //              f
+  //              Q
+  // XObject Form from Texture based on a pattern /SynT_2 10 0 R
+  //              q
+  //              n
+  //              ... Rotation + translate Transform  cm
+  //              /SynT_2 Do
+  //              f
+  //              Q
+
+
+
+   TPdfPattern = class(TPdfXObject)
+  private
+    FPage: TPdfPage;
+    FCanvas: TPdfCanvas;
+    fPixelHeight: Integer;
+    fPixelWidth: Integer;
+    fWrapMode:TSynWrapMode;
+    fXForm :XForm;
+    fImageName:PdfString;
+    fResources :TPDfDictionary;
+  public
+    /// create the pattern from TextureBitmap stored as a Bitmap
+    // DO NOT Test SynGdiPlus picture types, i.e. TJpegImage (stored as jpeg), and TGifImage/TPngImage (stored as bitmap)
+    // - use TPdfForm to handle TMetafile in vectorial format
+    // - an optional DontAddToFXref is available, if you don't want to add
+    // this object to the main XRef list of the PDF file
+    constructor Create(aCanvas: TPdfCanvas; aImageName: PdfString; DontAddToFXref: boolean); reintroduce;
+    /// create an image from a supplied JPEG file name
+    // - will raise an EFOpenError exception if the file doesn't exist
+    // - an optional DontAddToFXref is available, if you don't want to add
+    // this object to the main XRef list of the PDF file
+    /// width of the textureBitmap, in pixels units
+    property PixelWidth: Integer read fPixelWidth;
+    /// height of the textureBitmap, in pixels units
+    property PixelHeight: Integer read fPixelHeight;
+    property WrapMode: TSynWrapMode read fWrapMode;
+    property ImageName: PdfString read fImageName;
+    destructor Destroy; override;
+    /// close the internal canvas
+    procedure CloseCanvas;
+    /// access to the private canvas associated with the PDF form Pattern
+    property Canvas: TPdfCanvas read FCanvas;
+
+  end;
+  {$endif USE_BITMAP}
   /// a form XObject with a Canvas for drawing
   // - once created, you can create this XObject, then draw it anywhere on
   // any page - see sample
@@ -2791,6 +3046,10 @@ type
   public
     /// create a form XObject with TPDFCanvas
     constructor Create(aDoc: TPdfDocument; W, H: Integer); reintroduce;
+    // exact tiling f.e. 5 x 3
+    procedure FillByTexture(aDoc: TPdfDocument; aImageName: pdfString);
+    // standard tiling
+    procedure FillByPattern(aDoc: TPdfDocument; aPatternName: pdfString; aWidth, aHeight: single);
     /// release used memory
     destructor Destroy; override;
     /// close the internal canvas
@@ -3822,13 +4081,14 @@ end;
 
 procedure TPdfReal.InternalWriteTo(W: TPdfWrite);
 begin
-  W.Add(Value);
+  W.Add(Value,Decimals);
 end;
 
-constructor TPdfReal.Create(AValue: double);
+constructor TPdfReal.Create(AValue: double; aDecimals:Cardinal);
 begin
   inherited Create;
   Value := AValue;
+  Decimals := aDecimals;
 end;
 
 
@@ -4031,12 +4291,12 @@ begin
 end;
 
 constructor TPdfArray.CreateReals(AObjectMgr: TPdfObjectMgr;
-  const AArray: array of double);
+  const AArray: array of double; aDecimals: cardinal);
 var i: integer;
 begin
   Create(AObjectMgr);
   for i := 0 to high(AArray) do
-    AddItem(TPdfReal.Create(AArray[i]));
+    AddItem(TPdfReal.Create(AArray[i],aDecimals));
 end;
 
 destructor TPdfArray.Destroy;
@@ -4287,6 +4547,16 @@ begin
   AddItem(AKey,TPdfNumber.Create(AValue));
 end;
 
+procedure TPdfDictionary.AddItem(const AKey: PDFString; AValue: boolean);
+begin
+  AddItem(AKey,TPdfBoolean.Create(AValue));
+end;
+
+procedure TPdfDictionary.AddItem(const AKey: PDFString; AValue: single; aDecimals: cardinal );
+begin
+  AddItem(AKey,TPdfReal.Create(AValue,aDecimals));
+end;
+
 procedure TPdfDictionary.AddItemText(const AKey, AValue: PDFString);
 begin
   AddItem(AKey,TPdfText.Create(AValue));
@@ -4522,6 +4792,127 @@ begin
   result.Height := Height;
 end;
 
+// transform matrix utility
+
+function nearZero(p:single;pDecimals:word=6):boolean;
+begin
+  if pDecimals = 6  then
+    result :=abs(p)<1E-6
+  else
+    result :=abs(p)<1/power10(1,pDecimals);
+end;
+
+function TransformFlipY(aScaleX, aScaleY, aAngle: single; aTilesY: Integer): XForm;
+  function createXForm(m11,m12,m21,m22,dx,dy:single):XForm;
+  begin
+    Result.em11 := m11;
+    Result.em12 := m12;
+    Result.em21 := m21;
+    Result.em22 := m22;
+    Result.edx := dx;
+    Result.edy := dy;
+  end;
+  function TransformXForm(aX1, aX2:XForm):XForm;
+  begin
+      Result.em11 := aX1.em11 * aX2.em11 + aX1.em21 * aX2.em12;
+      Result.em12 := aX1.em12 * aX2.em11 + aX1.em22 * aX2.em12;
+      Result.em21 := aX1.em11 * aX2.em21 + aX1.em21 * aX2.em22;
+      Result.em22 := aX1.em12 * aX2.em21 + aX1.em22 * aX2.em22;
+      Result.edx := aX1.em11 * aX2.edx + aX1.em21 * aX2.edy + aX1.edx;
+      Result.edy := aX1.em12 * aX2.edx + aX1.em22 * aX2.edy + aX1.edy;
+  end;
+
+begin
+  // flipY->rotate->scale->translete
+  //flip
+  Result := CreateXForm(1,0,0,-1,0,0);
+  //rotate
+  Result := TransformXForm(Result,CreateXForm(cos(aAngle),sin(aAngle),-sin(aAngle), cos(aAngle),0,0));
+  //scale
+  Result := TransformXForm(Result,CreateXForm(aScaleX,0,0,aScaleY,0,0));
+  //translate
+  Result := TransformXForm(Result,CreateXForm(1,0,0,1,0,-aTilesY));
+end;
+
+
+function getShapeFromBoundingBox(aTextureDetail:TTextureDetail; aLeft,aTop,aWidth,aHeight:Single;aTilesX,aTilesY:integer): TPdfBox;
+var
+  lAngle,ly,lx,lScaleX,lScaleY,lc,ls: single;
+  lSignX,lSignY:integer;
+
+function getBBox( aLeft,aTop,aWidth,aHeight:Single) : TPdfBox;
+begin
+  Result.Left := aLeft;
+  Result.Top := aTop;
+  Result.Width := aWidth;
+  Result.Height := aHeight;
+end;
+
+begin
+  Result := getBBox(0,0,0,0);
+
+  lSignX := Sign(aTextureDetail.ScaleX);
+  lSignY := Sign(aTextureDetail.ScaleY);
+  lScaleX := abs(aTextureDetail.ScaleX)*aTilesX;
+  lScaleY := abs(aTextureDetail.ScaleY)*aTilesY;
+
+
+  lAngle :=aTextureDetail.Angle;
+
+  while lAngle < 0 do
+    lAngle := lAngle + 2*PI;
+
+  lAngle := lAngle - aTextureDetail.quadrant * PI/2;
+
+  lc := cos(lAngle);
+  ls := sin(lAngle);
+  if nearZero(lc) or nearZero(ls)  then   // angle = 0 or PI/2
+  begin
+     case aTextureDetail.quadrant of
+      0: Result := getBBox(0,0,awidth,aHeight);
+      3: Result := getBBox(0,aHeight,awidth,aHeight);
+      2: Result := getBBox(aWidth,aHeight,awidth,aHeight);
+      1: Result := getBBox(aWidth,0,awidth,aHeight);
+    end;
+  end
+  else if nearZero(lc-ls)   then   // Angle = PI/4 (45 degrees)
+  begin
+    ly :=  sqrt(2) * awidth * lscaleY/(lscaleX+lScaleY);
+    lx := lScaleX/lScaleY * ly;
+    case aTextureDetail.quadrant of
+      0: Result := getBBox(ly/sqrt(2),0,lx,ly);
+      2: Result := getBBox(lx/sqrt(2),aHeight, ly,lx);
+      1: Result := getBBox(aWidth,ly/sqrt(2),ly,lx);
+      3: Result := getBBox(0,lx/sqrt(2),lx,ly);
+    end;
+  end
+  else begin
+    lx := (awidth*lc-aHeight*ls)/(lc*lc - ls*ls);
+    ly := (awidth - lc*lx)/ls;
+    case aTextureDetail.quadrant of
+        0,2: begin
+           ly := (lc * aHeight -aWidth*ls)/(lc*lc - ls*ls);
+           lx := (awidth - ls*ly)/lc;
+           if aTextureDetail.quadrant=0 then
+             Result := getBBox(ls*ly,0,lx,ly)
+           else
+             Result := getBBox(lc*lx,aHeight,lx,ly)
+        end;
+        1,3: begin
+          ly := (aHeight*ls - aWidth*lc)/(ls*ls-lc*lc);
+          lx := (aWidth-lc*ly)/ls;
+           if aTextureDetail.quadrant=1 then
+             Result := getBBox(aWidth, ls*ly,ly, lx)
+           else
+             Result := getBBox(0, lc*lx,ly, lx)
+        end;
+    end;
+  end;
+  Result.Top  := Result.Top + aTop;
+  Result.Left := Result.Left + aLeft;
+end;
+
+
 function CombineTransform(xform1, xform2: XFORM): XFORM;
 begin
   Result.eM11 := xform1.eM11 * xform2.eM11 + xform1.eM12 * xform2.eM21;
@@ -4665,13 +5056,13 @@ begin
   result := self;
 end;
 
-function TPdfWrite.Add(Value: TSynExtended): TPdfWrite;
+function TPdfWrite.Add(Value: TSynExtended; Decimals: cardinal): TPdfWrite;
 var Buffer: ShortString;
     L: integer;
 begin
   if BEnd-B<=32 then
     Save;
-  str(Value:0:2,Buffer);
+  str(Value:0:Decimals,Buffer);
   L := ord(Buffer[0]);
   if Buffer[L]='0' then
     if Buffer[L-1]='0' then // '3.00' -> '3'
@@ -5652,171 +6043,6 @@ begin
   {$endif USE_PDFSECURITY}
 end;
 
-function TPdfDocument.CreateEmbeddedFont(const FontName: RawUTF8): TPdfFont;
-const
-  // WidthArray[30]=Ascent, WidthArray[31]=Descent,
-  // WidthArray[32..255]=Width(#32..#255)
-  ARIAL_W_ARRAY: array[30..255] of SmallInt = ( 905, -212,
-    278,278,355,556,556,889,667,191,333,333,389,584,278,333,
-    278,278,556,556,556,556,556,556,556,556,556,556,278,278,584,584,
-    584,556,1015,667,667,722,722,667,611,778,722,278,500,667,556,833,
-    722,778,667,778,722,667,611,722,667,944,667,667,611,278,278,278,
-    469,556,333,556,556,500,556,556,278,556,556,222,222,500,222,833,
-    556,556,556,556,333,500,278,556,500,722,500,500,500,334,260,334,
-    584,0,556,0,222,556,333,1000,556,556,333,1000,667,333,1000,0,
-    611,0,0,222,222,333,333,350,556,1000,333,1000,500,333,944,0,
-    500,667,0,333,556,556,556,556,260,556,333,737,370,556,584,0,
-    737,333,400,584,333,333,333,556,537,278,333,333,365,556,834,834,
-    834,611,667,667,667,667,667,667,1000,722,667,667,667,667,278,278,
-    278,278,722,722,778,778,778,778,778,584,778,722,722,722,722,667,
-    667,611,556,556,556,556,556,556,889,500,556,556,556,556,278,278,
-    278,278,556,556,556,556,556,556,556,584,611,556,556,556,556,500,
-    556,500);
-  ARIAL_BOLD_W_ARRAY: array[30..255] of SmallInt = ( 905, -212,
-    278,333,474,556,556,889,722,238,333,333,389,584,278,333,
-    278,278,556,556,556,556,556,556,556,556,556,556,333,333,584,584,
-    584,611,975,722,722,722,722,667,611,778,722,278,556,722,611,833,
-    722,778,667,778,722,667,611,722,667,944,667,667,611,333,278,333,
-    584,556,333,556,611,556,611,556,333,611,611,278,278,556,278,889,
-    611,611,611,611,389,556,333,611,556,778,556,556,500,389,280,389,
-    584,0,556,0,278,556,500,1000,556,556,333,1000,667,333,1000,0,
-    611,0,0,278,278,500,500,350,556,1000,333,1000,556,333,944,0,
-    500,667,0,333,556,556,556,556,280,556,333,737,370,556,584,0,
-    737,333,400,584,333,333,333,611,556,278,333,333,365,556,834,834,
-    834,611,722,722,722,722,722,722,1000,722,667,667,667,667,278,278,
-    278,278,722,722,778,778,778,778,778,584,778,722,722,722,722,667,
-    667,611,556,556,556,556,556,556,889,556,556,556,556,556,278,278,
-    278,278,611,611,611,611,611,611,611,584,611,611,611,611,611,556,
-    611,556);
-  ARIAL_ITALIC_W_ARRAY: array[30..255] of SmallInt = ( 905, -212,
-    278,278,355,556,556,889,667,191,333,333,389,584,278,333,
-    278,278,556,556,556,556,556,556,556,556,556,556,278,278,584,584,
-    584,556,1015,667,667,722,722,667,611,778,722,278,500,667,556,833,
-    722,778,667,778,722,667,611,722,667,944,667,667,611,278,278,278,
-    469,556,333,556,556,500,556,556,278,556,556,222,222,500,222,833,
-    556,556,556,556,333,500,278,556,500,722,500,500,500,334,260,334,
-    584,0,556,0,222,556,333,1000,556,556,333,1000,667,333,1000,0,
-    611,0,0,222,222,333,333,350,556,1000,333,1000,500,333,944,0,
-    500,667,0,333,556,556,556,556,260,556,333,737,370,556,584,0,
-    737,333,400,584,333,333,333,556,537,278,333,333,365,556,834,834,
-    834,611,667,667,667,667,667,667,1000,722,667,667,667,667,278,278,
-    278,278,722,722,778,778,778,778,778,584,778,722,722,722,722,667,
-    667,611,556,556,556,556,556,556,889,500,556,556,556,556,278,278,
-    278,278,556,556,556,556,556,556,556,584,611,556,556,556,556,500,
-    556,500);
-  ARIAL_BOLDITALIC_W_ARRAY: array[30..255] of SmallInt = ( 905, -212,
-    278,333,474,556,556,889,722,238,333,333,389,584,278,333,
-    278,278,556,556,556,556,556,556,556,556,556,556,333,333,584,584,
-    584,611,975,722,722,722,722,667,611,778,722,278,556,722,611,833,
-    722,778,667,778,722,667,611,722,667,944,667,667,611,333,278,333,
-    584,556,333,556,611,556,611,556,333,611,611,278,278,556,278,889,
-    611,611,611,611,389,556,333,611,556,778,556,556,500,389,280,389,
-    584,0,556,0,278,556,500,1000,556,556,333,1000,667,333,1000,0,
-    611,0,0,278,278,500,500,350,556,1000,333,1000,556,333,944,0,
-    500,667,0,333,556,556,556,556,280,556,333,737,370,556,584,0,
-    737,333,400,584,333,333,333,611,556,278,333,333,365,556,834,834,
-    834,611,722,722,722,722,722,722,1000,722,667,667,667,667,278,278,
-    278,278,722,722,778,778,778,778,778,584,778,722,722,722,722,667,
-    667,611,556,556,556,556,556,556,889,556,556,556,556,556,278,278,
-    278,278,611,611,611,611,611,611,611,584,611,611,611,611,611,556,
-    611,556);
-  TIMES_ROMAN_W_ARRAY: array[30..255] of SmallInt = ( 891, -216,
-    250,333,408,500,500,833,778,180,333,333,500,564,250,333,
-    250,278,500,500,500,500,500,500,500,500,500,500,278,278,564,564,
-    564,444,921,722,667,667,722,611,556,722,722,333,389,722,611,889,
-    722,722,556,722,667,556,611,722,722,944,722,722,611,333,278,333,
-    469,500,333,444,500,444,500,444,333,500,500,278,278,500,278,778,
-    500,500,500,500,333,389,278,500,500,722,500,500,444,480,200,480,
-    541,0,500,0,333,500,444,1000,500,500,333,1000,556,333,889,0,
-    611,0,0,333,333,444,444,350,500,1000,333,980,389,333,722,0,
-    444,722,0,333,500,500,500,500,200,500,333,760,276,500,564,0,
-    760,333,400,564,300,300,333,500,453,250,333,300,310,500,750,750,
-    750,444,722,722,722,722,722,722,889,667,611,611,611,611,333,333,
-    333,333,722,722,722,722,722,722,722,564,722,722,722,722,722,722,
-    556,500,444,444,444,444,444,444,667,444,444,444,444,444,278,278,
-    278,278,500,500,500,500,500,500,500,564,500,500,500,500,500,500,
-    500,500);
-  TIMES_ITALIC_W_ARRAY: array[30..255] of SmallInt = ( 891, -216,
-    250,333,420,500,500,833,778,214,333,333,500,675,250,333,
-    250,278,500,500,500,500,500,500,500,500,500,500,333,333,675,675,
-    675,500,920,611,611,667,722,611,611,722,722,333,444,667,556,833,
-    667,722,611,722,611,500,556,722,611,833,611,556,556,389,278,389,
-    422,500,333,500,500,444,500,444,278,500,500,278,278,444,278,722,
-    500,500,500,500,389,389,278,500,444,667,444,444,389,400,275,400,
-    541,0,500,0,333,500,556,889,500,500,333,1000,500,333,944,0,
-    556,0,0,333,333,556,556,350,500,889,333,980,389,333,667,0,
-    389,556,0,389,500,500,500,500,275,500,333,760,276,500,675,0,
-    760,333,400,675,300,300,333,500,523,250,333,300,310,500,750,750,
-    750,500,611,611,611,611,611,611,889,667,611,611,611,611,333,333,
-    333,333,722,667,722,722,722,722,722,675,722,722,722,722,722,556,
-    611,500,500,500,500,500,500,500,667,444,444,444,444,444,278,278,
-    278,278,500,500,500,500,500,500,500,675,500,500,500,500,500,444,
-    500,444);
-  TIMES_BOLD_W_ARRAY: array[30..255] of SmallInt = ( 891, -216,
-    250,333,555,500,500,1000,833,278,333,333,500,570,250,333,
-    250,278,500,500,500,500,500,500,500,500,500,500,333,333,570,570,
-    570,500,930,722,667,722,722,667,611,778,778,389,500,778,667,944,
-    722,778,611,778,722,556,667,722,722,1000,722,722,667,333,278,333,
-    581,500,333,500,556,444,556,444,333,500,556,278,333,556,278,833,
-    556,500,556,556,444,389,333,556,500,722,500,500,444,394,220,394,
-    520,0,500,0,333,500,500,1000,500,500,333,1000,556,333,1000,0,
-    667,0,0,333,333,500,500,350,500,1000,333,1000,389,333,722,0,
-    444,722,0,333,500,500,500,500,220,500,333,747,300,500,570,0,
-    747,333,400,570,300,300,333,556,540,250,333,300,330,500,750,750,
-    750,500,722,722,722,722,722,722,1000,722,667,667,667,667,389,389,
-    389,389,722,722,778,778,778,778,778,570,778,722,722,722,722,722,
-    611,556,500,500,500,500,500,500,722,444,444,444,444,444,278,278,
-    278,278,500,556,500,500,500,500,500,570,500,556,556,556,556,500,
-    556,500);
-  TIMES_BOLDITALIC_W_ARRAY: array[30..255] of SmallInt = ( 891, -216,
-    250,389,555,500,500,833,778,278,333,333,500,570,250,333,
-    250,278,500,500,500,500,500,500,500,500,500,500,333,333,570,570,
-    570,500,832,667,667,667,722,667,667,722,778,389,500,667,611,889,
-    722,722,611,722,667,556,611,722,667,889,667,611,611,333,278,333,
-    570,500,333,500,500,444,500,444,333,500,556,278,278,500,278,778,
-    556,500,500,500,389,389,278,556,444,667,500,444,389,348,220,348,
-    570,0,500,0,333,500,500,1000,500,500,333,1000,556,333,944,0,
-    611,0,0,333,333,500,500,350,500,1000,333,1000,389,333,722,0,
-    389,611,0,389,500,500,500,500,220,500,333,747,266,500,606,0,
-    747,333,400,570,300,300,333,576,500,250,333,300,300,500,750,750,
-    750,500,667,667,667,667,667,667,944,667,667,667,667,667,389,389,
-    389,389,722,722,722,722,722,722,722,570,722,722,722,722,722,611,
-    611,500,500,500,500,500,500,500,722,444,444,444,444,444,278,278,
-    278,278,500,556,500,500,500,500,500,570,500,556,556,556,556,444,
-    500,444);
-  STANDARDFONTS: array[0..11] of record
-    Name: RawUTF8;
-    Widths: PSmallIntArray;
-  end = (
-    (Name: 'Courier'; Widths: nil), // Widths:nil -> set all widths to 600
-    (Name: 'Courier-Bold'; Widths: nil),
-    (Name: 'Courier-Oblique'; Widths: nil),
-    (Name: 'Courier-BoldOblique'; Widths: nil),
-    (Name: 'Helvetica'; Widths: @ARIAL_W_ARRAY),
-    (Name: 'Helvetica-Bold'; Widths: @ARIAL_BOLD_W_ARRAY),
-    (Name: 'Helvetica-Oblique'; Widths: @ARIAL_ITALIC_W_ARRAY),
-    (Name: 'Helvetica-BoldOblique'; Widths: @ARIAL_BOLDITALIC_W_ARRAY),
-    (Name: 'Times'; Widths: @TIMES_ROMAN_W_ARRAY),
-    (Name: 'Times-Bold'; Widths: @TIMES_BOLD_W_ARRAY),
-    (Name: 'Times-Oblique'; Widths: @TIMES_ITALIC_W_ARRAY),
-    (Name: 'Times-BoldOblique'; Widths: @TIMES_BOLDITALIC_W_ARRAY) );
-var i: integer;
-    FontName2: PDFString;
-begin
-  // handle default embedded fonts
-  if StandardFontsReplace then begin
-    // fonts width are for WinAnsi encoding only
-    FontName2 := RawUTF8ToPDFString(FontName);
-    for i := 0 to high(STANDARDFONTS) do
-      if SameTextU(STANDARDFONTS[i].Name,FontName) then begin
-        result := TPdfFontType1.Create(FXref,FontName2,STANDARDFONTS[i].Widths);
-        RegisterFont(result);
-        Exit;
-      end;
-  end;
-  result := nil;
-end;
-
 function TPdfDocument.RegisterXObject(AObject: TPdfXObject; const AName: PDFString): integer;
 begin
    // check object and register it
@@ -5876,6 +6102,25 @@ begin
   result := -1;
 end;
 
+{$ifdef USE_BITMAP}
+function TPdfDocument.GetPattern(const AName: PDFString): TPdfPattern;
+var i: integer;
+begin
+  for i := 0 to FPatternList.ItemCount-1 do begin
+    result := TPdfPattern(FPatternList.FArray.List[i]);
+    if result.FObjectType=otVirtualObject then begin
+      result := TPdfPattern(FXRef.GetObject(result.FObjectNumber));
+      if (result=nil) or not result.InheritsFrom(TPdfPattern) then
+        continue;
+    end;
+    if result.Attributes<>nil then
+      if TPdfName(result.Attributes.ValueByName('Name')).Value=AName then
+        exit;
+  end;
+  Result := nil;
+end;
+{$endif USE_BITMAP}
+
 function TPdfDocument.GetXObject(const AName: PDFString): TPdfXObject;
 var i: integer;
 begin
@@ -5907,14 +6152,49 @@ begin
     if (Obj<>nil) and Obj.InheritsFrom(TPdfImage) and
        (Img.PixelWidth=Width) and (Img.PixelHeight=Height) and
        not IsZero(Img.fHash.b) and IsEqual(Img.fHash.b,Hash.b) and
-       (Obj.Attributes<>nil) then begin
-      result := TPdfName(Obj.Attributes.ValueByName('Name')).Value;
-      if result<>'' then
-        exit;
+         (Obj.Attributes<>nil) then begin
+        result := TPdfName(Obj.Attributes.ValueByName('Name')).Value;
+        if result<>'' then
+          exit;
+      end;
     end;
-  end;
   result := '';
 end;
+
+// identify object/pattern only  by name (texturename has to be unique)
+// pattern is of type TPdfPattern, texture is inherited from TPdfXObject
+function TPdfDocument.GetPatternImageName(const aImageName: PDFString;aCanvas:TPdfCanvas): PDFString;
+var Obj: TPdfPattern;
+    objX : TPdfXObject;
+    i: integer;
+begin
+  for i := 0 to FPatternList.ItemCount-1 do begin
+    Obj := TPdfPattern(FPatternList.FArray.List[i]);
+    if Obj.FObjectType=otVirtualObject then
+      Obj := TPdfPattern(FXRef.GetObject(Obj.FObjectNumber));
+    if (Obj<>nil) and (TPdfName(Obj.Attributes.ValueByName('Name')).Value=aImageName{Canvas.TextureName}) then
+       begin
+        result := TPdfName(Obj.Attributes.ValueByName('Name')).Value;
+        if result<>'' then
+          exit;
+      end;
+  end;
+  for i := 0 to FXObjectList.ItemCount-1 do begin
+    ObjX := TPdfXObject(FXObjectList.FArray.List[i]);
+    if ObjX.FObjectType=otVirtualObject then
+      ObjX:= TPdfXObject(FXRef.GetObject(ObjX.FObjectNumber));
+    if (ObjX<>nil) and ObjX.InheritsFrom(TPdfFormWithCanvas) and
+       (TPdfName(ObjX.Attributes.ValueByName('Name')).Value=aImageName {aCanvas.TextureName}) then
+       begin
+         result := TPdfName(ObjX.Attributes.ValueByName('Name')).Value;
+         if result<>'' then
+           exit;
+       end;
+  end;
+
+  result := '';
+end;
+
 {$endif USE_BITMAP}
 
 function TPdfDocument.CreateAnnotation(AType: TPdfAnnotationSubType;
@@ -6039,6 +6319,8 @@ begin
   FTrailer := TPdfTrailer.Create(FXref);
   FFontList := TList.Create;
   FXObjectList := TPdfArray.Create(FXref);
+  FPatternList := TPdfArray.Create(FXref);
+  FPatternList.FSaveAtTheEnd := true;
   FXObjectList.FSaveAtTheEnd := true;
   FObjectList := TList.Create;
   FRoot := TPdfCatalog.Create;
@@ -6132,6 +6414,56 @@ begin
     fEncryption.AttachDocument(self);
   {$endif USE_PDFSECURITY}
 end;
+{$ifdef USE_BITMAP}
+function TPdfDocument.RegisterPattern(AObject: TPdfPattern; const AName: PDFString): integer;
+begin
+   // check object and register it
+   if AObject=nil then
+     raise EPdfInvalidValue.Create('RegisterPattern: no AObject');
+   if ((AObject.Attributes.TypeOf<>'Pattern') and (canvas.PatternType = pptPattern)) or
+     ((AObject.Attributes.TypeOf<>'XObject') and (canvas.PatternType = pptTexture))
+   then
+     raise EPdfInvalidValue.Create('RegisterPattern: no Pattern');
+   if AObject.ObjectType<>otIndirectObject then
+     FXref.AddObject(AObject);
+   if AObject.Attributes.ValueByName('Name')=nil then begin
+     if GetPattern(AName)<>nil then
+       raise EPdfInvalidValue.Createfmt('RegisterPattern: dup name %s', [AName]);
+    if canvas.PatternType = pptPattern then
+       result := FPatternList.AddItem(AObject)
+     else
+       result := FXObjectList.AddItem(AObject);
+     AObject.Attributes.AddItem('Name', AName);
+   end else
+     result := -1;
+end;
+
+function TPdfDocument.AddPattern(const AName: PDFString; APattern: TPdfPattern): integer;
+begin
+  if GetPattern(AName)<>nil then
+    raise EPdfInvalidValue.CreateFmt('AddPattern: dup name %s', [AName]);
+  // check whether APattern is valid PdfPattern or not.
+  if (APattern=nil) or (APattern.Attributes=nil) or
+    ((APattern.Attributes.TypeOf<>'Pattern') and (canvas.PatternType = pptPattern))  then
+    raise EPdfInvalidValue.CreateFmt('AddPattern: invalid TPdfPattern %s', [AName]);
+  FXref.AddObject(APattern);
+  result := RegisterPattern(APattern, AName);
+end;
+{$endif USE_BITMAP}
+
+function TPdfDocument.AddFormTexture(const AName: PDFString; APattern:   TPdfFormWithCanvas ): integer;
+begin
+begin
+  if GetPattern(AName)<>nil then
+    raise EPdfInvalidValue.CreateFmt('AddPSTexture: dup name %s', [AName]);
+  // check whether APattern is valid TPdfFormWithCanvas or not.
+  if (APattern=nil) or (APattern.Attributes=nil) or
+    ((APattern.Attributes.TypeOf<>'XObject') and (canvas.PatternType = pptTexture)) then
+    raise EPdfInvalidValue.CreateFmt('AddPattern: invalid TPdfPattern %s', [AName]);
+  FXref.AddObject(APattern);
+  result := RegisterXObject(APattern, AName);
+end;
+end;
 
 function TPdfDocument.AddXObject(const AName: PDFString; AXObject: TPdfXObject): integer;
 begin
@@ -6163,6 +6495,7 @@ begin
   result.AddItem('Resources',FResources);
   FResources.AddItem('Font',TPdfDictionary.Create(FXref));
   FResources.AddItem('XObject',TPdfDictionary.Create(FXref));
+  FResources.AddItem('Pattern',TPdfDictionary.Create(FXref));
   // create page content
   FResources.AddItem('ProcSet',TPdfArray.CreateNames(FXref,['PDF','Text','ImageC']));
   result.AddItem('Contents',TPdfStream.Create(self));
@@ -6175,6 +6508,17 @@ var i: integer;
 begin
   if FXObjectList<>nil then begin
     FreeAndNil(FXObjectList);
+    if FPatternList<>nil then
+      FreeAndNil(FPatternList);
+    if FTextureBMPs<>nil then
+    begin
+      for i := High(FTextureBMPs) downto 0 do
+        FTextureBMPs[i].textureMS.Free;
+      FreeAndNil(FTextureBMPs);
+    end;
+    if fTextureList<>nil then
+     FreeAndNil(fTextureList);
+
     for i := FFontList.Count-1 downto 0 do
       TObject(FFontList.List[i]).Free;
     FreeAndNil(FFontList);
@@ -6563,10 +6907,15 @@ end;
 function TPdfDocument.CreateOrGetImage(B: TBitmap; DrawAt: PPdfBox; ClipRc: PPdfBox): PDFString;
 var J: TJpegImage;
     Img: TPdfImage;
+    lShape: TPdfBox;
+    texture : TPdfFormWithCanvas;
+    pattern : TPdfPattern;
     Hash: THash128Rec;
-    y,w,h,row: integer;
+    y,w,h,row,lBitsPerPixel: integer;
     nPals: cardinal;
     Pals: array of TPaletteEntry;
+    lBitmap : TBitmap;
+    lTextureName,lPatName : PDFString;
 const PERROW: array[TPixelFormat] of byte = (0,1,4,8,15,16,24,32,0);
   procedure DoHash(bits: pointer; size: Integer);
   begin
@@ -6580,28 +6929,35 @@ begin
   if (self=nil) or (B=nil) then exit;
   w := B.Width;
   h := B.Height;
+  // replace Bitmap with textureBitmap if it is explicitely set
+  if Canvas.useTexture then
+    lBitmap := Canvas.TextureBitmap
+  else
+    lBitmap := B;
+
   if ForceNoBitmapReuse then
     FillCharFast(Hash,sizeof(Hash),0) else begin
-    row := PERROW[B.PixelFormat];
+    lBitsPerPixel := PERROW[lBitmap.PixelFormat];
     if row=0 then begin
-      B.PixelFormat := pf24bit;
-      row := 24;
+      lBitmap.PixelFormat := pf24bit;
+      lBitsPerPixel := 24;
     end;
     Hash.c0 := 0;
     Hash.c1 := 1400305337; // 3 prime numbers
     Hash.c2 := 2468776129;
     Hash.c3 := 3121238909;
-    if B.Palette<>0 then begin
+    if lBitmap.Palette<>0 then begin
       nPals := 0;
-      if (GetObject(B.Palette,sizeof(nPals),@nPals)<>0) and (nPals>0) then begin
+      if (GetObject(lBitmap.Palette,sizeof(nPals),@nPals)<>0) and (nPals>0) then begin
         SetLength(Pals,nPals);
-        if GetPaletteEntries(B.Palette,0,nPals,Pals[0])=nPals then
+        if GetPaletteEntries(lBitmap.Palette,0,nPals,Pals[0])=nPals then
           DoHash(pointer(Pals),nPals*sizeof(TPaletteEntry));
       end;
     end;
-    row := BytesPerScanline(w,row,32);
-    for y := 0 to h-1 do
-      DoHash(B.ScanLine[y],row);
+
+    row := BytesPerScanline(lBitmap.Width,lBitsPerPixel,1);
+    for y := 0 to  lBitmap.Height -1 do
+        DoHash(lBitmap.ScanLine[y],row);
     result := GetXObjectImageName(Hash,w,h); // search for matching image
   end;
   if result='' then begin
@@ -6610,7 +6966,7 @@ begin
       Img := TPdfImage.Create(Canvas.fDoc,B,True) else begin
       J := TJpegImage.Create;
       try
-        J.Assign(B);
+        J.Assign(lBitmap);
         Img := TPdfImage.Create(Canvas.fDoc,J,False);
       finally
         J.Free;
@@ -6622,15 +6978,69 @@ begin
       AddXObject(result,Img) else
       RegisterXObject(Img, result);
   end;
+  // handle texture/pattern
+  if canvas.useTexture then
+  begin
+    // returns dimensions of rotated shape from BoundingBox
+    lShape:= getShapeFromBoundingBox(canvas.Doc.getTextureDetail(canvas.TextureObjectID), DrawAt^.Left,DrawAt^.Top,DrawAt^.Width,DrawAt^.Height,canvas.TextureTilesX,canvas.TextureTilesY);
+    lTextureName := GetPatternImageName(canvas.getTextureName,Canvas);
+    if lTextureName = '' then
+    begin
+      if Canvas.patternType=pptPattern then  // add pattern and Texture based on pattern
+      begin
+        Pattern := TPdfPattern.create(Canvas,result,True);
+        lTextureName :=canvas.getTextureName;
+        AddPattern(lTextureName,Pattern);
+        Texture := TPdfFormWithCanvas.create(Canvas.fDoc,ceil(lShape.Width), ceil(lShape.Height));
+        Texture.FillByPattern(Canvas.Doc,lTextureName,lShape.Width, lShape.Height );
+        canvas.TextureObjectID := Canvas.Doc.copyOrGetTextureDetail(canvas.Doc.getTextureDetail(canvas.TextureObjectID), pptTexture, lShape.Width,lShape.Height,canvas.getTextureName);
+        lTextureName :=canvas.getTextureName;
+      end
+      else begin    // add Texture
+        Texture := TPdfFormWithCanvas.create(Canvas.fDoc,b.Width*canvas.TextureTilesX,b.Height*canvas.TextureTilesY);
+        Texture.FillByTexture(Canvas.fDoc,result);
+        lTextureName :=canvas.getTextureName;
+      end;
+      AddFormTexture(lTextureName,Texture)
+
+    end
+    else if Canvas.patternType=pptPattern then
+    begin
+      // the shape is filled by a pattern and stored as XObject Form
+      lTextureName := Canvas.Doc.getTextureDetailName(canvas.Doc.getTextureDetail(canvas.TextureObjectID), pptTexture, lShape.Width,lShape.Height);
+      if (lTextureName = '') or ( GetPatternImageName(lTextureName,Canvas)='') then  // add texture based on pattern
+      begin
+        Texture := TPdfFormWithCanvas.create(Canvas.fDoc,ceil(lShape.Width), ceil(lShape.Height));
+        Texture.FillByPattern(Canvas.fDoc,canvas.getTextureName,lShape.Width, lShape.Height );
+        canvas.TextureObjectID := Canvas.Doc.copyOrGetTextureDetail(canvas.Doc.getTextureDetail(canvas.TextureObjectID), pptTexture, lShape.Width,lShape.Height,canvas.getTextureName);
+        lTextureName :=canvas.getTextureName;
+        AddFormTexture(lTextureName,Texture)
+      end;
+    end;
+  end;
+
   // draw bitmap as XObject
   if DrawAt<>nil then begin
     if ClipRc<>nil then
       with DrawAt^ do
-        Canvas.DrawXObjectEx(Left,Top,Width,Height,
-          ClipRc^.Left,ClipRc^.Top,ClipRc^.Width,ClipRc^.Height, result) else
+      begin
+        if canvas.useTexture then
+          Canvas.DrawPatternEx(lShape.Left,lShape.Top,Width,Height,
+            ClipRc^.Left,ClipRc^.Top,ClipRc^.Width,ClipRc^.Height, result, lTextureName)
+        else
+          Canvas.DrawXObjectEx(Left,Top,Width,Height,
+            ClipRc^.Left,ClipRc^.Top,ClipRc^.Width,ClipRc^.Height, result)
+      end
+      else
       with DrawAt^ do
-        Canvas.DrawXObject(Left,Top,Width,Height, result);
+      begin
+        if canvas.useTexture then
+          Canvas.DrawPattern(lShape.Left,lShape.Top,Width,Height,result, lTextureName)
+        else
+          Canvas.DrawXObject(Left,Top,Width,Height, result);
+      end;
   end;
+
 end;
 {$endif USE_BITMAP}
 
@@ -6755,6 +7165,151 @@ begin
       fFileFormat := pdf14;
 end;
 
+procedure TPdfDocument.addTextureBMPs(pID:word;pMS:THeapMemoryStream);
+begin
+  setLength(fTextureBMPs,Length(fTextureBMPs)+1);
+  with fTextureBMPs[high(fTextureBMPs)] do
+  begin
+    TextureID := pID;
+    pMS.Seek(0,soFromBeginning);
+    TextureMS := THeapMemoryStream.create;
+    TextureMS.size := pMS.Size;
+    TextureMS.Seek(0,soFromBeginning);
+    TextureMS.CopyFrom(pMS, pMS.Size);
+  end;
+end;
+
+procedure TPdfDocument.setTextureBMPs(pId:word);
+var i : integer;
+begin
+  canvas.UseTexture := false;
+  for i := 0 to High(fTextureBMPs) do
+  begin
+
+    if pID=fTextureBMPs[i].textureID  then
+      with fTextureBMPs[i] do
+      begin
+        TextureMS.seek(0,soFromBeginning);
+        canvas.TextureBitmap := TBitmap.create;
+        canvas.TextureBitmap.loadFromStream(TextureMS);
+        canvas.UseTexture := true;
+      end;
+  end;
+
+end;
+
+function TPdfDocument.GetTextureDetailIdx(aTextureID: word; aPatternType: TPdfPatternType; aTilesX,aTilesY: word; aWrapMode:TSynWrapMode; aScaleX,aScaleY,aAngle:single; aWidth:single; aHeight:single; pTestOrigin:boolean):SmallInt;
+var i : SmallInt;
+begin
+  result := -1;
+  for i := 0 to High(fTextureList) do
+    if (aTextureID =fTextureList[i].TextureID) and
+       (aPatternType =fTextureList[i].PatternType) and
+       (aTilesX =fTextureList[i].TilesX) and
+       (aTilesY =fTextureList[i].TilesY) and
+       (aWrapMode =fTextureList[i].WrapMode) and
+       ((pTestOrigin and (nearZero(aScaleX - fTextureList[i].OriginScaleX)) and
+                         (nearZero(aScaleY - fTextureList[i].OriginScaleY))) or
+       (not pTestOrigin and (nearZero(aScaleX - fTextureList[i].ScaleX)) and
+                         (nearZero(aScaleY - fTextureList[i].ScaleY)))) and
+       (nearZero(aAngle - fTextureList[i].Angle)) and
+       (nearZero(aWidth -fTextureList[i].Width,1)) and
+       (nearZero(aHeight -fTextureList[i].Height,1)) then
+       begin
+         result :=word(i);
+         exit;
+       end;
+
+end;
+
+function TPdfDocument.createOrGetTexture(aTextureID: word; aPatternType: TPdfPatternType; aTilesX,aTilesY: word; aWrapMode:TSynWrapMode; aScaleX,aScaleY,aAngle:single; aWidth:single; aHeight:single):word;
+var i : SmallInt;
+    lAngle : single;
+begin
+  lAngle := aAngle * PI/180;
+  i := GetTextureDetailIdx(aTextureID, aPatternType, aTilesX, aTilesY, aWrapMode, aScaleX, aScaleY, -lAngle, aWidth, aHeight, true);
+  if i>-1 then
+  begin
+    result := word(i);
+    exit;
+  end;
+  setLength(fTextureList,Length(fTextureList)+1);
+  with fTextureList[high(fTextureList)] do
+  begin
+    textureID :=  aTextureID;
+    patternType := aPatternType;
+    TilesX    := aTilesX;
+    if aPatternType=pptPattern then
+      textureName := 'SynPat_'
+    else
+      textureName := 'SynT_'  ;
+    textureName := textureName +  inttostr(High(fTextureList));
+    InheritFrom:='';
+    TilesY    := aTilesY;
+    Quadrant  := trunc(-aAngle / 90 + 4 ) mod 4    ;
+    Angle := -lAngle;       // Due flipY {0,0] is LeftBottom
+    originScaleX := aScaleX;
+    originScaleY := aScaleY;
+    XF        := TransformFlipY(aScaleX, aScaleY, lAngle, aTilesY);
+    ScaleX := aScaleX;
+    ScaleY := -aScaleY;      // Due flipY {0,0] is LeftBottom
+    WrapMode  := aWrapMode;
+    Width     := aWidth;
+    Height    := aHeight;
+  end;
+  result :=high(fTextureList);
+end;
+
+function TPdfDocument.copyorGetTextureDetail(aTextureDetail:TTextureDetail; aPatternType: TPdfPatternType; aWidth,aHeight : single; aInheritFrom:pdfString): word;
+var i: SmallInt;
+begin
+  with  aTextureDetail do
+    i := GetTextureDetailIdx(TextureID, aPatternType, TilesX, TilesY, WrapMode, ScaleX, ScaleY, Angle,aWidth, aHeight);
+  if i > -1 then
+  begin
+    result := word(i);
+    exit;
+  end;
+
+  setLength(fTextureList,Length(fTextureList)+1);
+  fTextureList[high(fTextureList)] := aTextureDetail;
+  with fTextureList[high(fTextureList)] do
+  begin
+    patternType := aPatternType;
+    InheritFrom := aInheritFrom;
+    Width       := aWidth;
+    Height      := aHeight;
+    if PatternType=pptPattern then
+      textureName := 'SynPat_'
+    else
+      textureName := 'SynT_'  ;
+    textureName := textureName +  inttostr(High(fTextureList));
+  end;
+  result :=high(fTextureList);
+end;
+
+function TPdfDocument.getTextureDetailName(aTextureDetail:TTextureDetail; aPatternType: TPdfPatternType; aWidth,aHeight : single): PdfString;
+var i: SmallInt;
+    w : word;
+begin
+  result := '';
+  with  aTextureDetail do
+    i := GetTextureDetailIdx(TextureID, aPatternType, TilesX, TilesY, WrapMode, ScaleX, ScaleY, Angle,aWidth,aHeight);
+  if i > -1 then
+  begin
+    w := i;
+    if fTextureList[i].PatternType=pptPattern then
+      Result := 'SynPat_'+inttostr(w)
+    else
+      Result := 'SynT_'+inttostr(w)
+  end;
+
+end;
+
+function TPdfDocument.getTextureDetail(pIdx: word):TTextureDetail;
+begin
+  result := fTextureList[pIdx];
+end;
 
 { TPdfCanvas }
 
@@ -6770,6 +7325,9 @@ begin
   fUseMetaFileTextPositioning := tpSetTextJustification;
   fKerningHScaleBottom := 99.0;
   fKerningHScaleTop := 101.0;
+  fTextureXFORM := DefaultIdentityMatrix;
+  fTextureBitmap := nil;
+  fTextureWrapMode := SynWrapModeTile;
 end;
 
 function TPdfCanvas.GetPage: TPdfPage;
@@ -6802,17 +7360,6 @@ begin
   FPage.FontSize := ASize;
 end;
 
-function StandardFontName(const AName: RawUTF8; AStyle: TPdfFontStyles): RawUTF8;
-begin
-  result := AName;
-  if pfsItalic in AStyle then
-    if pfsBold in AStyle then
-      result := result+'-BoldOblique' else
-      result := result+'-Oblique' else
-    if pfsBold in AStyle then
-      result := result+'-Bold';
-end;
-
 procedure InitializeLogFontW(const aFontName: RawUTF8; aStyle: TPdfFontStyles;
   var aFont: TLogFontW);
 begin
@@ -6829,23 +7376,167 @@ begin
   end;
 end;
 
+const // see PDF ref 9.6.2.2: Standard Type 1 Fonts
+  // WidthArray[30]=Ascent, WidthArray[31]=Descent,
+  // WidthArray[32..255]=Width(#32..#255)
+  ARIAL_W_ARRAY: array[30..255] of SmallInt = (
+    905,-212,278,278,355,556,556,889,667,191,333,333,389,584,278,333,
+    278,278,556,556,556,556,556,556,556,556,556,556,278,278,584,584,
+    584,556,1015,667,667,722,722,667,611,778,722,278,500,667,556,833,
+    722,778,667,778,722,667,611,722,667,944,667,667,611,278,278,278,
+    469,556,333,556,556,500,556,556,278,556,556,222,222,500,222,833,
+    556,556,556,556,333,500,278,556,500,722,500,500,500,334,260,334,
+    584,0,556,0,222,556,333,1000,556,556,333,1000,667,333,1000,0,
+    611,0,0,222,222,333,333,350,556,1000,333,1000,500,333,944,0,
+    500,667,0,333,556,556,556,556,260,556,333,737,370,556,584,0,
+    737,333,400,584,333,333,333,556,537,278,333,333,365,556,834,834,
+    834,611,667,667,667,667,667,667,1000,722,667,667,667,667,278,278,
+    278,278,722,722,778,778,778,778,778,584,778,722,722,722,722,667,
+    667,611,556,556,556,556,556,556,889,500,556,556,556,556,278,278,
+    278,278,556,556,556,556,556,556,556,584,611,556,556,556,556,500,556,500);
+  ARIAL_BOLD_W_ARRAY: array[30..255] of SmallInt = (
+    905,-212,278,333,474,556,556,889,722,238,333,333,389,584,278,333,
+    278,278,556,556,556,556,556,556,556,556,556,556,333,333,584,584,
+    584,611,975,722,722,722,722,667,611,778,722,278,556,722,611,833,
+    722,778,667,778,722,667,611,722,667,944,667,667,611,333,278,333,
+    584,556,333,556,611,556,611,556,333,611,611,278,278,556,278,889,
+    611,611,611,611,389,556,333,611,556,778,556,556,500,389,280,389,
+    584,0,556,0,278,556,500,1000,556,556,333,1000,667,333,1000,0,
+    611,0,0,278,278,500,500,350,556,1000,333,1000,556,333,944,0,
+    500,667,0,333,556,556,556,556,280,556,333,737,370,556,584,0,
+    737,333,400,584,333,333,333,611,556,278,333,333,365,556,834,834,
+    834,611,722,722,722,722,722,722,1000,722,667,667,667,667,278,278,
+    278,278,722,722,778,778,778,778,778,584,778,722,722,722,722,667,
+    667,611,556,556,556,556,556,556,889,556,556,556,556,556,278,278,
+    278,278,611,611,611,611,611,611,611,584,611,611,611,611,611,556,611,556);
+  ARIAL_ITALIC_W_ARRAY: array[30..255] of SmallInt = (
+    905,-212,278,278,355,556,556,889,667,191,333,333,389,584,278,333,
+    278,278,556,556,556,556,556,556,556,556,556,556,278,278,584,584,
+    584,556,1015,667,667,722,722,667,611,778,722,278,500,667,556,833,
+    722,778,667,778,722,667,611,722,667,944,667,667,611,278,278,278,
+    469,556,333,556,556,500,556,556,278,556,556,222,222,500,222,833,
+    556,556,556,556,333,500,278,556,500,722,500,500,500,334,260,334,
+    584,0,556,0,222,556,333,1000,556,556,333,1000,667,333,1000,0,
+    611,0,0,222,222,333,333,350,556,1000,333,1000,500,333,944,0,
+    500,667,0,333,556,556,556,556,260,556,333,737,370,556,584,0,
+    737,333,400,584,333,333,333,556,537,278,333,333,365,556,834,834,
+    834,611,667,667,667,667,667,667,1000,722,667,667,667,667,278,278,
+    278,278,722,722,778,778,778,778,778,584,778,722,722,722,722,667,
+    667,611,556,556,556,556,556,556,889,500,556,556,556,556,278,278,
+    278,278,556,556,556,556,556,556,556,584,611,556,556,556,556,500,556,500);
+  ARIAL_BOLDITALIC_W_ARRAY: array[30..255] of SmallInt = (
+    905,-212,278,333,474,556,556,889,722,238,333,333,389,584,278,333,
+    278,278,556,556,556,556,556,556,556,556,556,556,333,333,584,584,
+    584,611,975,722,722,722,722,667,611,778,722,278,556,722,611,833,
+    722,778,667,778,722,667,611,722,667,944,667,667,611,333,278,333,
+    584,556,333,556,611,556,611,556,333,611,611,278,278,556,278,889,
+    611,611,611,611,389,556,333,611,556,778,556,556,500,389,280,389,
+    584,0,556,0,278,556,500,1000,556,556,333,1000,667,333,1000,0,
+    611,0,0,278,278,500,500,350,556,1000,333,1000,556,333,944,0,
+    500,667,0,333,556,556,556,556,280,556,333,737,370,556,584,0,
+    737,333,400,584,333,333,333,611,556,278,333,333,365,556,834,834,
+    834,611,722,722,722,722,722,722,1000,722,667,667,667,667,278,278,
+    278,278,722,722,778,778,778,778,778,584,778,722,722,722,722,667,
+    667,611,556,556,556,556,556,556,889,556,556,556,556,556,278,278,
+    278,278,611,611,611,611,611,611,611,584,611,611,611,611,611,556,611,556);
+  TIMES_ROMAN_W_ARRAY: array[30..255] of SmallInt = (
+    891,-216,250,333,408,500,500,833,778,180,333,333,500,564,250,333,
+    250,278,500,500,500,500,500,500,500,500,500,500,278,278,564,564,
+    564,444,921,722,667,667,722,611,556,722,722,333,389,722,611,889,
+    722,722,556,722,667,556,611,722,722,944,722,722,611,333,278,333,
+    469,500,333,444,500,444,500,444,333,500,500,278,278,500,278,778,
+    500,500,500,500,333,389,278,500,500,722,500,500,444,480,200,480,
+    541,0,500,0,333,500,444,1000,500,500,333,1000,556,333,889,0,
+    611,0,0,333,333,444,444,350,500,1000,333,980,389,333,722,0,
+    444,722,0,333,500,500,500,500,200,500,333,760,276,500,564,0,
+    760,333,400,564,300,300,333,500,453,250,333,300,310,500,750,750,
+    750,444,722,722,722,722,722,722,889,667,611,611,611,611,333,333,
+    333,333,722,722,722,722,722,722,722,564,722,722,722,722,722,722,
+    556,500,444,444,444,444,444,444,667,444,444,444,444,444,278,278,
+    278,278,500,500,500,500,500,500,500,564,500,500,500,500,500,500,500,500);
+  TIMES_ITALIC_W_ARRAY: array[30..255] of SmallInt = (
+    891,-216,250,333,420,500,500,833,778,214,333,333,500,675,250,333,
+    250,278,500,500,500,500,500,500,500,500,500,500,333,333,675,675,
+    675,500,920,611,611,667,722,611,611,722,722,333,444,667,556,833,
+    667,722,611,722,611,500,556,722,611,833,611,556,556,389,278,389,
+    422,500,333,500,500,444,500,444,278,500,500,278,278,444,278,722,
+    500,500,500,500,389,389,278,500,444,667,444,444,389,400,275,400,
+    541,0,500,0,333,500,556,889,500,500,333,1000,500,333,944,0,
+    556,0,0,333,333,556,556,350,500,889,333,980,389,333,667,0,
+    389,556,0,389,500,500,500,500,275,500,333,760,276,500,675,0,
+    760,333,400,675,300,300,333,500,523,250,333,300,310,500,750,750,
+    750,500,611,611,611,611,611,611,889,667,611,611,611,611,333,333,
+    333,333,722,667,722,722,722,722,722,675,722,722,722,722,722,556,
+    611,500,500,500,500,500,500,500,667,444,444,444,444,444,278,278,
+    278,278,500,500,500,500,500,500,500,675,500,500,500,500,500,444,500,444);
+  TIMES_BOLD_W_ARRAY: array[30..255] of SmallInt = (
+    891,-216,250,333,555,500,500,1000,833,278,333,333,500,570,250,333,
+    250,278,500,500,500,500,500,500,500,500,500,500,333,333,570,570,
+    570,500,930,722,667,722,722,667,611,778,778,389,500,778,667,944,
+    722,778,611,778,722,556,667,722,722,1000,722,722,667,333,278,333,
+    581,500,333,500,556,444,556,444,333,500,556,278,333,556,278,833,
+    556,500,556,556,444,389,333,556,500,722,500,500,444,394,220,394,
+    520,0,500,0,333,500,500,1000,500,500,333,1000,556,333,1000,0,
+    667,0,0,333,333,500,500,350,500,1000,333,1000,389,333,722,0,
+    444,722,0,333,500,500,500,500,220,500,333,747,300,500,570,0,
+    747,333,400,570,300,300,333,556,540,250,333,300,330,500,750,750,
+    750,500,722,722,722,722,722,722,1000,722,667,667,667,667,389,389,
+    389,389,722,722,778,778,778,778,778,570,778,722,722,722,722,722,
+    611,556,500,500,500,500,500,500,722,444,444,444,444,444,278,278,
+    278,278,500,556,500,500,500,500,500,570,500,556,556,556,556,500,556,500);
+  TIMES_BOLDITALIC_W_ARRAY: array[30..255] of SmallInt = (
+    891,-216,250,389,555,500,500,833,778,278,333,333,500,570,250,333,
+    250,278,500,500,500,500,500,500,500,500,500,500,333,333,570,570,
+    570,500,832,667,667,667,722,667,667,722,778,389,500,667,611,889,
+    722,722,611,722,667,556,611,722,667,889,667,611,611,333,278,333,
+    570,500,333,500,500,444,500,444,333,500,556,278,278,500,278,778,
+    556,500,500,500,389,389,278,556,444,667,500,444,389,348,220,348,
+    570,0,500,0,333,500,500,1000,500,500,333,1000,556,333,944,0,
+    611,0,0,333,333,500,500,350,500,1000,333,1000,389,333,722,0,
+    389,611,0,389,500,500,500,500,220,500,333,747,266,500,606,0,
+    747,333,400,570,300,300,333,576,500,250,333,300,300,500,750,750,
+    750,500,667,667,667,667,667,667,944,667,667,667,667,667,389,389,
+    389,389,722,722,722,722,722,722,722,570,722,722,722,722,722,611,
+    611,500,500,500,500,500,500,500,722,444,444,444,444,444,278,278,
+    278,278,500,556,500,500,500,500,500,570,500,556,556,556,556,444,500,444);
+  STANDARDFONTS: array[0..11] of record
+    Name: PDFString;
+    Widths: PSmallIntArray;
+  end = (
+    (Name: 'Times-Roman'; Widths: @TIMES_ROMAN_W_ARRAY),
+    (Name: 'Times-Bold'; Widths: @TIMES_BOLD_W_ARRAY),
+    (Name: 'Times-Italic'; Widths: @TIMES_ITALIC_W_ARRAY),
+    (Name: 'Times-BoldItalic'; Widths: @TIMES_BOLDITALIC_W_ARRAY),
+    (Name: 'Helvetica'; Widths: @ARIAL_W_ARRAY),
+    (Name: 'Helvetica-Bold'; Widths: @ARIAL_BOLD_W_ARRAY),
+    (Name: 'Helvetica-Oblique'; Widths: @ARIAL_ITALIC_W_ARRAY),
+    (Name: 'Helvetica-BoldOblique'; Widths: @ARIAL_BOLDITALIC_W_ARRAY),
+    (Name: 'Courier'; Widths: nil), // Widths:nil -> set all widths to 600
+    (Name: 'Courier-Bold'; Widths: nil),
+    (Name: 'Courier-Oblique'; Widths: nil),
+    (Name: 'Courier-BoldOblique'; Widths: nil));
+
 function TPdfCanvas.SetFont(const AName: RawUTF8; ASize: single; AStyle: TPdfFontStyles;
   ACharSet: integer=-1; AForceTTF: integer=-1; AIsFixedWidth: boolean=false): TPdfFont;
 const
-  STAND_FONTS_PDF: array[0..2] of RawUTF8 = ('Helvetica','Courier','Times');
-  STAND_FONTS_WIN: array[0..2] of RawUTF8 = ('Arial','Courier New','Times New Roman');
-  STAND_FONTS_UPPER: array[0..2] of PAnsiChar = ('HELVETICA','COURIER','TIMES');
-procedure SetEmbeddedFont(ABaseFont: RawUTF8);
-begin
-  ABaseFont := StandardFontName(ABaseFont,AStyle);
-  result := fDoc.GetRegisteredNotTrueTypeFont(RawUTF8ToPDFString(ABaseFont));
-  if result=nil then
-    // font not already registered -> try to add now
-    result := fDoc.CreateEmbeddedFont(ABaseFont);
-  SetPDFFont(result,ASize);
-end;
+  STAND_FONTS_PDF: array[TPdfFontStandard] of RawUTF8 = ('Times','Helvetica','Courier');
+  STAND_FONTS_WIN: array[TPdfFontStandard] of RawUTF8 = ('Times New Roman','Arial','Courier New');
+  STAND_FONTS_UPPER: array[TPdfFontStandard] of PAnsiChar = ('TIMES','HELVETICA','COURIER');
+  procedure SetEmbeddedFont(Standard: TPdfFontStandard);
+  var BaseIndex: integer;
+  begin
+    BaseIndex := ord(Standard)*4+(byte(AStyle) and 3);
+    result := fDoc.GetRegisteredNotTrueTypeFont(STANDARDFONTS[BaseIndex].Name);
+    if result=nil then begin // font not already registered -> add now
+      with STANDARDFONTS[BaseIndex] do
+        result := TPdfFontType1.Create(fDoc.FXref,Name,Widths);
+      fDoc.RegisterFont(result);
+    end;
+    SetPDFFont(result,ASize);
+  end;
 var AFont: TLogFontW;
-    FontIndex, i: integer;
+    FontIndex: integer;
+    f: TPdfFontStandard;
 begin
   result := nil;
   if (self=nil) or (FDoc=nil) then
@@ -6856,10 +7547,10 @@ begin
     // handle use embedded fonts for standard fonts, if needed
     if (fDoc.FCharSet=ANSI_CHARSET) and fDoc.StandardFontsReplace then begin
       // standard/embedded fonts are WinAnsi only
-      for i := low(STAND_FONTS_PDF) to high(STAND_FONTS_PDF) do
-        if SameTextU(AName,STAND_FONTS_PDF[i]) or
-           SameTextU(AName,STAND_FONTS_WIN[i]) then begin
-          SetEmbeddedFont(STAND_FONTS_PDF[i]);
+      for f := low(f) to high(f) do
+        if SameTextU(AName,STAND_FONTS_PDF[f]) or
+           SameTextU(AName,STAND_FONTS_WIN[f]) then begin
+          SetEmbeddedFont(f);
           if result<>nil then
             exit; // we got a standard/embedded font
         end;
@@ -6869,12 +7560,12 @@ begin
       // search the font in the global system-wide true type fonts list
       FontIndex := fDoc.GetTrueTypeFontIndex(AName);
       if FontIndex<0 then begin // unknown, device or raster font
-        if AIsFixedWidth then // sounds to be fixed-width -> set 'Courier'
-          FontIndex := fDoc.GetTrueTypeFontIndex(STAND_FONTS_WIN[1]);
+        if AIsFixedWidth then // sounds to be fixed-width -> set 'Courier New'
+          FontIndex := fDoc.GetTrueTypeFontIndex(STAND_FONTS_WIN[pfsCourier]);
         // do not exist as is: find equivalency of some "standard" font
-        for i := low(STAND_FONTS_UPPER) to high(STAND_FONTS_UPPER) do
-          if (FontIndex<0) and IdemPChar(pointer(AName),STAND_FONTS_UPPER[i]) then
-            FontIndex := fDoc.GetTrueTypeFontIndex(STAND_FONTS_WIN[i]);
+        for f := low(f) to high(f) do
+          if (FontIndex<0) and IdemPChar(pointer(AName),STAND_FONTS_UPPER[f]) then
+            FontIndex := fDoc.GetTrueTypeFontIndex(STAND_FONTS_WIN[f]);
         if FontIndex<0 then begin // use variable width default font
           FontIndex := FDoc.fFontFallBackIndex;
           if FontIndex<0 then
@@ -7075,6 +7766,35 @@ begin
   {$endif USE_METAFILE}
 end;
 
+procedure TPdfCanvas.DrawPatternPrepare(const APattern: PDFString);
+var pattern: TPdfPattern;
+    FPageResources: TPdfDictionary;
+    i: integer;
+begin
+  // drawing object must be registered. check object name
+  if PatternType = pptPattern then
+  begin
+    pattern := fDoc.GetPattern(APattern);
+    if pattern=nil then
+      raise EPdfInvalidValue.CreateFmt('DrawPattern: unknown %s', [APattern]);
+    FPageResources := FPage.GetResources('Pattern');
+    if FPageResources=nil then
+      raise EPdfInvalidValue.Create('DrawPattern: no Pattern');
+    if FPageResources.ValueByName(APattern)=nil then
+      FPageResources.AddItem(APattern, Pattern);
+    {$ifdef USE_METAFILE}
+    if pattern.InheritsFrom(TPdfForm) then
+      with TPdfForm(pattern).FFontList do
+        for i := 0 to ItemCount-1 do
+        with Items[i] do
+          if FPageFontList.ValueByName(Key)=nil then
+            FPageFontList.AddItem(Key, Value);
+    {$endif USE_METAFILE}
+  end
+  else begin
+    DrawXObjectPrepare(APattern);
+  end;
+end;
 procedure TPdfCanvas.DrawXObject(X, Y, AWidth, AHeight: Single;
     const AXObjectName: PDFString);
 begin
@@ -7099,6 +7819,72 @@ begin
   GRestore;
 end;
 
+procedure TPdfCanvas.DrawPattern(X, Y, AWidth, AHeight: Single;const AXObjectName: PDFString;
+    const APatternName: PDFString);
+var lScale,ls,lc,lScaleX,lScaleY,ldx,ldy : single;
+begin
+  DrawXObjectPrepare(AXObjectName);
+  if (patternType=pptPattern) and (doc.fTextureList[TextureObjectID].inheritFrom<>'') then
+    DrawPatternPrepare(doc.fTextureList[TextureObjectID].inheritFrom);
+  DrawXObjectPrepare(APatternName);
+  GSave;
+  lc := cos(doc.fTextureList[TextureObjectID].angle);
+  ls := sin(doc.fTextureList[TextureObjectID].angle);
+  if patternType=pptPattern then
+  begin
+    // use only rotation and shift vertex of BoundRect
+    ConcatToCTM(lc, ls, -ls, lc, X, Y);
+    lScale := I2X(Max(TextureBitmap.Width,TextureBitmap.Height));
+    ExecuteXObject(APatternName);
+  end
+  else begin
+    // shift vertex of the boundary rect to the vertex of the rotated shape
+    // an angle of rotation is considered only in (-PI/2,PI/2)
+    lScale := I2X(Max(TextureBitmap.Width,TextureBitmap.Height));
+    ConcatToCTM(lScale, 0, 0, lScale,  X,  Y);
+    ExecuteXObject(APatternName);
+  end;
+  fill;
+  GRestore;
+end;
+
+procedure TPdfCanvas.DrawPatternEx(X, Y, AWidth, AHeight: Single;
+      ClipX, ClipY, ClipWidth, ClipHeight: Single;const AXObjectName: PDFString; const APatternName: PDFString);
+var lScale : single;
+    lP :TPointF;
+    ls,lc,lScaleX,lScaleY,ldx,ldy : single;
+begin
+  DrawXObjectPrepare(AXObjectName);
+  if (patternType=pptPattern) and (doc.fTextureList[TextureObjectID].inheritFrom<>'') then
+    DrawPatternPrepare(doc.fTextureList[TextureObjectID].inheritFrom);
+  DrawXObjectPrepare(APatternName);
+  GSave;
+// own clip preceeds EMR_STRETCHDIBITS  ( if the shape isn't rectangle) in a metafile
+// therefore isn't useful to overwrite by the parent clip region
+// EMR_SaveDC->EMR_BeginPath->EMR_(poly)PolyGon(16)->EMR_EndPath->EMR_SelectClipPath->EMRStretchDIBits
+//  Rectangle(ClipX, ClipY, ClipWidth, ClipHeight);
+//  Clip;
+//  NewPath;
+//  fNewPath := False;
+
+  lc := cos(doc.fTextureList[TextureObjectID].angle);
+  ls := sin(doc.fTextureList[TextureObjectID].angle);
+  if patternType=pptPattern then
+  begin
+    // use only rotation from TextureMatrix
+    ConcatToCTM(lc, ls, -ls, lc, X, Y);
+    ExecuteXObject(APatternName);
+  end
+  else begin
+    lScale := I2X(Max(TextureBitmap.Width,TextureBitmap.Height));
+    // shift vertex of the boundary rect to the vertex of the rotated shape
+    // an angle of rotation is expected in (-PI/2,PI/2)
+    ConcatToCTM(lScale, 0, 0, lScale,  X,  Y);
+    ExecuteXObject(APatternName);
+  end;
+  fill;
+  GRestore;
+end;
 
   {* Special Graphics State *}
 
@@ -7119,6 +7905,10 @@ begin
   if FContents<>nil then
     FContents.Writer.AddWithSpace(a,Decimals).AddWithSpace(b,Decimals).AddWithSpace(c,Decimals).
       AddWithSpace(d,Decimals).AddWithSpace(e,Decimals).AddWithSpace(f,Decimals).Add('cm'#10);
+end;
+procedure TPdfCanvas.ConcatToCTM(aXForm: XForm;  Decimals: Cardinal);
+begin
+  concatToCTM(aXForm.em11, aXForm.em12, aXForm.em21, aXForm.em22, aXForm.edx, aXForm.edy,Decimals)
 end;
 
 
@@ -7172,13 +7962,13 @@ end;
 procedure TPdfCanvas.MoveTo(x, y: Single);
 begin
   if FContents<>nil then
-    FContents.Writer.AddWithSpace(x).AddWithSpace(y).Add('m'#10);
+    FContents.Writer.AddWithSpace(x,6).AddWithSpace(y,6).Add('m'#10);
 end;
 
 procedure TPdfCanvas.LineTo(x, y: Single);
 begin
   if FContents<>nil then
-    FContents.Writer.AddWithSpace(x).AddWithSpace(y).Add('l'#10);
+    FContents.Writer.AddWithSpace(x,6).AddWithSpace(y,6).Add('l'#10);
 end;
 
 procedure TPdfCanvas.CurveToC(x1, y1, x2, y2, x3, y3: Single);
@@ -7202,11 +7992,11 @@ begin
       AddWithSpace(y3).Add('y'#10);
 end;
 
-procedure TPdfCanvas.Rectangle(x, y, width, height: Single);
+procedure TPdfCanvas.Rectangle(x, y, width, height: Single;Decimals:cardinal);
 begin
   if FContents<>nil then
-    FContents.Writer.AddWithSpace(x).AddWithSpace(y).AddWithSpace(width).
-      AddWithSpace(height).Add('re'#10);
+    FContents.Writer.AddWithSpace(x,decimals).AddWithSpace(y,decimals).AddWithSpace(width,decimals).
+      AddWithSpace(height,decimals).Add('re'#10);
 end;
 
 procedure TPdfCanvas.Closepath;
@@ -7225,43 +8015,43 @@ end;
 procedure TPdfCanvas.Stroke;
 begin
   if FContents<>nil then
-    FContents.Writer.Add('S'#10);
+      FContents.Writer.Add('S'#10);
 end;
 
 procedure TPdfCanvas.ClosePathStroke;
 begin
   if FContents<>nil then
-    FContents.Writer.Add('s'#10);
+      FContents.Writer.Add('s'#10);
 end;
 
 procedure TPdfCanvas.Fill;
 begin
   if FContents<>nil then
-    FContents.Writer.Add('f'#10);
+      FContents.Writer.Add('f'#10);
 end;
 
 procedure TPdfCanvas.Eofill;
 begin
   if FContents<>nil then
-    FContents.Writer.Add('f*'#10);
+      FContents.Writer.Add('f*'#10);
 end;
 
 procedure TPdfCanvas.FillStroke;
 begin
   if FContents<>nil then
-    FContents.Writer.Add('B'#10);
+      FContents.Writer.Add('B'#10);
 end;
 
 procedure TPdfCanvas.ClosepathFillStroke;
 begin
   if FContents<>nil then
-    FContents.Writer.Add('b'#10);
+      FContents.Writer.Add('b'#10);
 end;
 
 procedure TPdfCanvas.EofillStroke;
 begin
   if FContents<>nil then
-    FContents.Writer.Add('B*'#10);
+      FContents.Writer.Add('B*'#10);
 end;
 
 procedure TPdfCanvas.ClosepathEofillStroke;
@@ -7408,6 +8198,15 @@ procedure TPdfCanvas.ExecuteXObject(const xObject: PDFString);
 begin
   if FContents<>nil then
     FContents.Writer.Add('/').Add(xObject).Add(' Do'#10);
+end;
+
+procedure TPdfCanvas.ExecutePattern(const pattern: PDFString);
+begin
+  if FContents<>nil then
+  begin
+    FContents.Writer.Add('/').Add('Pattern').Add(' cs'#10);
+    FContents.Writer.Add('/').Add(pattern).Add(' scn'#10);
+  end;
 end;
 
 procedure TPdfCanvas.SetRGBFillColor(Value: TPdfColor);
@@ -7754,6 +8553,11 @@ procedure TPdfCanvas.EndMarkedContent;
 begin
   if (FContents<>nil) and FDoc.UseOptionalContent then
     FContents.Writer.Add('EMC'#10);
+end;
+
+function TPdfCanvas.getTextureName:pdfString;
+begin
+  result := Doc.FTextureList[textureObjectID].textureName;
 end;
 
 { TPdfDictionaryWrapper }
@@ -9147,6 +9951,7 @@ type
   TPdfEnumState = record
     Position: TPoint;
     Moved: boolean;
+    Clip:boolean;
     WinSize, ViewSize: TSize;
     WinOrg, ViewOrg: TPoint;
     //transformation and clipping
@@ -9185,10 +9990,14 @@ type
     fPenStyle: integer;
     fPenWidth: Single;
     fInLined: boolean;
+    fInPath : boolean;
     fInitTransformMatrix: XFORM;
     fInitMetaRgn: TPdfBox;
     procedure SetFillColor(const Value: integer);
     procedure SetStrokeColor(const Value: integer);
+    function getGClip:boolean;
+    procedure setGClip(const pValue:boolean);
+
   protected
     Canvas: TPdfCanvas;
     // the pen/font/brush objects table, indexed like the THandleTable
@@ -9207,11 +10016,13 @@ type
     procedure RestoreDC;
     procedure NeedPen;
     procedure NeedBrushAndPen;
+    function CanBrushAndPen:boolean;
     procedure FlushPenBrush;
     procedure SelectObjectFromIndex(iObject: integer);
     procedure TextOut(var R: TEMRExtTextOut);
     procedure ScaleMatrix(Custom: PXForm; iMode: Integer);
-    procedure HandleComment(Kind: TPdfGDIComment; P: PAnsiChar; Len: integer);
+    // Comment for EMF+ starts With 'Emf+' chars
+    procedure HandleComment(P: PAnsiChar; Len: integer);
     procedure CreateFont(aLogFont: PEMRExtCreateFontIndirect);
     // if Canvas.Doc.JPEGCompression<>0, draw not as a bitmap but jpeg encoded
     procedure DrawBitmap(xs,ys,ws,hs, xd,yd,wd,hd,usage: integer;
@@ -9224,6 +10035,12 @@ type
     property StrokeColor: integer read fStrokeColor write SetStrokeColor;
     // WorldTransform
     property InitTransformMatrix: XFORM read fInitTransformMatrix write fInitTransformMatrix;
+    // path Brackets
+    property InPath : boolean read fInPath write fInPath ;
+    property GClip : boolean read getGClip write setGClip ;
+
+
+
     // MetaRgn - clipping
     procedure InitMetaRgn(ClientRect: TRect);
     procedure SetMetaRgn;
@@ -9297,9 +10114,15 @@ begin
   EMR_EXTTEXTOUTA, EMR_EXTTEXTOUTW:
       E.TextOut(PEMRExtTextOut(R)^);
   EMR_SAVEDC:
+  begin
     E.SaveDC;
+    E.Canvas.GSave;
+  end;
   EMR_RESTOREDC:
+  begin
     E.RestoreDC;
+    E.Canvas.GRestore;
+  end;
   EMR_SETWORLDTRANSFORM:
     E.ScaleMatrix(@PEMRSetWorldTransform(R)^.xform, MWT_SET);
   EMR_CREATEPEN:
@@ -9710,7 +10533,8 @@ begin
   EMR_GDICOMMENT:
     with PEMRGDICOMMENT(R)^ do
       if cbData>1 then
-        E.HandleComment(TPdfGDIComment(Data[0]),PAnsiChar(@Data)+1,cbData-1);
+        // parse comment int the HandleComment procedure itself
+        E.HandleComment(PAnsiChar(@Data),cbData);
   EMR_MODIFYWORLDTRANSFORM:
     with PEMRModifyWorldTransform(R)^ do
       E.ScaleMatrix(@PEMRModifyWorldTransform(R)^.xform, iMode);
@@ -9730,11 +10554,21 @@ begin
     E.SetMetaRgn;
   EMR_EXTSELECTCLIPRGN:
     E.ExtSelectClipRgn(@PEMRExtSelectClipRgn(R)^.RgnData[0],PEMRExtSelectClipRgn(R)^.iMode);
+  EMR_SELECTCLIPPATH:begin
+    E.gclip := true;
+    if PolyFillMode = ALTERNATE then
+      E.Canvas.eoclip
+    else
+      E.Canvas.clip;
+    E.Canvas.NewPath;
+  end;
+
   EMR_INTERSECTCLIPRECT:
     ClipRgn := E.IntersectClipRect(E.Canvas.BoxI(PEMRIntersectClipRect(r)^.rclClip,true),ClipRgn);
   EMR_SETMAPMODE:
     MappingMode := PEMRSetMapMode(R)^.iMode;
   EMR_BEGINPATH: begin
+    E.InPath := true;
     E.Canvas.NewPath;
     if not Moved then begin
       E.Canvas.MoveToI(Position.X,Position.Y);
@@ -9742,7 +10576,10 @@ begin
     end;
   end;
   EMR_ENDPATH:
+  begin
+    E.InPath := false;
     E.Canvas.fNewPath := false;
+  end;
   EMR_ABORTPATH: begin
     E.Canvas.NewPath;
     E.Canvas.fNewPath := false;
@@ -9769,17 +10606,20 @@ begin
     if not brush.Null then begin
       E.NeedPen;
       E.FillColor := brush.color;
-      if not pen.null then
-        if PolyFillMode=ALTERNATE then
-          E.Canvas.EofillStroke else
-          E.Canvas.FillStroke
-      else if PolyFillMode=ALTERNATE then
-        E.Canvas.EoFill else
-        E.Canvas.Fill
-    end else
-    if not pen.null then begin
-      E.NeedPen;
-      E.Canvas.Stroke;
+      if E.CanBrushAndPen then
+      begin
+        if not pen.null then
+          if PolyFillMode=ALTERNATE then
+            E.Canvas.EofillStroke else
+            E.Canvas.FillStroke
+        else if PolyFillMode=ALTERNATE then
+          E.Canvas.EoFill else
+          E.Canvas.Fill
+      end else
+      if not pen.null then begin
+        E.NeedPen;
+        E.Canvas.Stroke;
+      end;
     end;
     E.Canvas.NewPath;
     E.Canvas.fNewPath := False;
@@ -9899,9 +10739,11 @@ begin
   DC[0].WorldTransform := fInitTransformMatrix;
   fInitMetaRgn := PdfBox(0, 0, 0, 0);
   DC[0].ClipRgnNull := True;
+  DC[0].Clip := false;
   DC[0].MappingMode := MM_TEXT;
   DC[0].PolyFillMode := ALTERNATE;
   DC[0].StretchBltMode := STRETCH_DELETESCANS;
+  fInPath := false;
 end;
 
 procedure TPdfEnum.CreateFont(aLogFont: PEMRExtCreateFontIndirect);
@@ -9933,7 +10775,7 @@ end;
 procedure TPdfEnum.DrawBitmap(xs, ys, ws, hs, xd, yd, wd, hd, usage: integer;
   Bmi: PBitmapInfo; bits: pointer; clipRect: PRect; xSrcTransform: PXForm; dwRop: DWord;
   transparent: TPdfColorRGB = $FFFFFFFF);
-var B: TBitmap;
+var B,lBMP: TBitmap;
     R: TRect;
     Box, ClipRc: TPdfBox;
     fIntFactorX, fIntFactorY, fIntOffsetX, fIntOffsetY: Single;
@@ -9942,32 +10784,48 @@ begin
   try
     InitTransformation(xSrcTransform, fIntFactorX, fIntFactorY, fIntOffsetX, fIntOffsetY);
     // create a TBitmap with (0,0,ws,hs) bounds from DIB bits and info
-    if Bmi^.bmiHeader.biBitCount=1 then
-      B.Monochrome := true else
-      B.PixelFormat := pf24bit;
-    B.Width := ws;
-    B.Height := hs;
-    StretchDIBits(B.Canvas.Handle,0, 0, ws, hs, Trunc(xs+fIntOffsetX), Trunc(ys+fIntOffsetY),
-      Trunc(ws*fIntFactorX), Trunc(hs*fIntFactorY), bits, Bmi^, usage, dwRop);
-    if transparent <> $FFFFFFFF then begin
-      if integer(transparent)<0 then
-        transparent := GetSysColor(transparent and $ff);
-      B.TransparentColor := transparent;
-    end;
+    if Not canvas.useTexture then
+    begin
+
+      if Bmi^.bmiHeader.biBitCount=1 then
+        B.Monochrome := true else
+        B.PixelFormat := pf24bit;
+      B.Width := ws;
+      B.Height := hs;
+      StretchDIBits(B.Canvas.Handle,0, 0, ws, hs, Trunc(xs+fIntOffsetX), Trunc(ys+fIntOffsetY),
+        Trunc(ws*fIntFactorX), Trunc(hs*fIntFactorY), bits, Bmi^, usage, dwRop);
+      if transparent <> $FFFFFFFF then begin
+        if integer(transparent)<0 then
+          transparent := GetSysColor(transparent and $ff);
+        B.TransparentColor := transparent;
+      end;
+      lBMP := B;
+    end
+    else
+      lBMP :=canvas.TextureBitmap;
+
     // draw the bitmap on the PDF canvas
     with Canvas do begin
       R := Rect(xd, yd, wd+xd, hd+yd);
       NormalizeRect(R);
       Box := BoxI(R,true);
       ClipRc := GetClipRect;
-      if (ClipRc.Width>0) and (ClipRc.Height>0) then
-        Doc.CreateOrGetImage(B, @Box, @ClipRc) else // use cliping
-        Doc.CreateOrGetImage(B, @Box, nil);
+      if (ClipRc.Width>0) and (ClipRc.Height>0) and not GClip then    //doesn't exist own clip
+        Doc.CreateOrGetImage(lBMP, @Box, @ClipRc) else // use cliping
+        Doc.CreateOrGetImage(lBMP, @Box, nil);
       // Doc.CreateOrGetImage() will reuse any matching TPdfImage
       // don't send bmi and bits parameters here, because of StretchDIBits above
     end;
   finally
     B.Free;
+    if Canvas.UseTexture then
+    begin
+      // use pattern/texture only for one specific bitmap
+      Canvas.UseTexture := false;
+      canvas.TextureBitmap.free;
+    end;
+
+
   end;
 end;
 
@@ -10083,23 +10941,26 @@ begin
       end;
     end;
   end;
-  if iType in [EMR_POLYPOLYLINE, EMR_POLYPOLYLINE16] then begin // stroke
-    if not DC[nDC].pen.null then
-      Canvas.Stroke else
-      Canvas.NewPath;
-  end else begin // fill
-    if not DC[nDC].brush.null then begin
-      if not DC[nDC].pen.null then
-        if DC[nDC].PolyFillMode=ALTERNATE then
-          Canvas.EofillStroke else
-          Canvas.FillStroke
-      else if DC[nDC].PolyFillMode=ALTERNATE then
-        Canvas.EoFill else
-        Canvas.Fill
-    end else
+  if CanBrushAndPen then
+  begin
+    if iType in [EMR_POLYPOLYLINE, EMR_POLYPOLYLINE16] then begin // stroke
       if not DC[nDC].pen.null then
         Canvas.Stroke else
         Canvas.NewPath;
+    end else begin // fill
+      if not DC[nDC].brush.null then begin
+        if not DC[nDC].pen.null then
+          if DC[nDC].PolyFillMode=ALTERNATE then
+            Canvas.EofillStroke else
+            Canvas.FillStroke
+        else if DC[nDC].PolyFillMode=ALTERNATE then
+          Canvas.EoFill else
+          Canvas.Fill
+      end else
+        if not DC[nDC].pen.null then
+          Canvas.Stroke else
+          Canvas.NewPath;
+    end;
   end;
 end;
 
@@ -10118,16 +10979,17 @@ end;
 
 procedure TPdfEnum.FlushPenBrush;
 begin
-  with DC[nDC] do begin
-    if brush.null then begin
-      if not pen.null then
-        Canvas.Stroke else
-        Canvas.NewPath;
-    end else
-    if pen.null then
-      Canvas.Fill else
-      Canvas.FillStroke;
-  end;
+  if CanBrushAndPen then
+    with DC[nDC] do begin
+      if brush.null then begin
+        if not pen.null then
+          Canvas.Stroke else
+          Canvas.NewPath;
+      end else
+      if pen.null then
+        Canvas.Fill else
+        Canvas.FillStroke;
+    end;
 end;
 
 procedure TPdfEnum.SelectObjectFromIndex(iObject: integer);
@@ -10191,29 +11053,87 @@ begin
   end;
 end;
 
-procedure TPdfEnum.HandleComment(Kind: TPdfGDIComment; P: PAnsiChar; Len: integer);
+procedure TPdfEnum.HandleComment(P: PAnsiChar; Len: integer);
 var Text: RawUTF8;
-    W: integer;
+    W,i: integer;
+
+    lP,lRecordLen: PAnsiChar;
+    lLen,d,lSize:UINT;
+    lRecordType : word;
+
+// parse comment of TPdfGDIComment itself
+procedure HandleCommentInner(Kind: TPdfGDIComment; P: PAnsiChar; Len: integer);
+var wm,l,d, tn: word;
+    lScaleX,lScaleY,lAngle : single;
+    lP: PAnsiChar;
+    i : integer;
+    lm : single;
+    lMS : THeapMemoryStream;
+
+function DWordToSingle(P:PAnsiChar):single;
+begin
+  Result.words[0] := PWord(P)^;
+  Result.words[1] := PWord(P+2)^;
+end;
+
 begin
   try
     case Kind of
       pgcOutline:
       if Len>1 then begin
-        SetString(Text,P+1,Len-1);
-        Canvas.Doc.CreateOutline(UTF8ToString(Trim(Text)),PByte(P)^,
+        SetString(Text,lP+1,lLen-1);
+        Canvas.Doc.CreateOutline(UTF8ToString(Trim(Text)),PByte(lP)^,
           Canvas.I2Y(DC[nDC].Position.Y));
       end;
+      pgcTextureBMP:begin    // 'SI'+ index
+        lP := P + 2;
+        l := PWord(lP)^;
+        Inc(lP,2);
+        lMS := THeapMemoryStream.Create;
+        lMS.SetSize(len - 4);
+        lMS.Seek(0,soFromBeginning);
+        lMS.WriteBuffer(lp^,len-4);
+        Canvas.Doc.addTextureBMPs(l,lMS);
+        lMS.free;
+      end;
+      pgcPatternID, pgcTextureID:begin     // 'ST'/'SP'+ index + tilesX + TilesY + WrapMode+ XForm Id (for this specific pattern)
+        l := PWord(P+2)^;
+        Canvas.Doc.setTextureBMPs(l);
+        if Kind = pgcPatternID then
+          canvas.PatternType := pptPattern
+        else
+          canvas.PatternType := pptTexture;
+        lP := P + 4;
+        Canvas.TextureTilesX := PWord(lP)^;
+        Inc(lP,2);
+        Canvas.TextureTilesY := PWord(lP)^;
+        Inc(lP,2);
+        wm := PWord(lP)^;    // wrapmode
+        Canvas.TextureWrapMode := TSynWrapMode(wm);
+        if Canvas.TextureWrapMode = SynWrapModeClamp then
+          canvas.PatternType := pptTexture;
+        Inc(lP,2);
+       Canvas.TextureXFORM := DefaultIdentityMatrix;
+       i := 0;
+       lScaleX := DWordToSingle(lP );
+       lScaleY := DWordToSingle(lP +  4);
+       lAngle := DWordToSingle(lP + 8);
+
+       canvas.TextureObjectID := Canvas.doc.createOrGetTexture(l, canvas.PatternType, Canvas.TextureTilesX, Canvas.TextureTilesY, Canvas.TextureWrapMode, lScaleX,lScaleY,lAngle );
+       Canvas.TextureXFORM :=  Canvas.doc.fTextureList[canvas.TextureObjectID].XF; // flip Y{ CombineTransform(DefaultIdentityMatrix,lXForm);}
+
+      end;
       pgcBookmark: begin
-        SetString(Text,P,Len);
+        SetString(Text,lP,lLen);
         Canvas.Doc.CreateBookMark(Canvas.I2Y(DC[nDC].Position.Y),Text);
       end;
       pgcLink,pgcLinkNoBorder:
       if Len>Sizeof(TRect) then begin
-        SetString(Text,P+SizeOf(TRect),Len-SizeOf(TRect));
+        SetString(Text,lP+SizeOf(TRect),lLen-SizeOf(TRect));
         if Kind=pgcLink then
           W := 1 else
           W := 0;
-        Canvas.Doc.CreateLink(Canvas.RectI(PRect(P)^,true),Text,abSolid,W);
+        Canvas.Doc.CreateLink(Canvas.RectI(PRect(lP)^,true),Text,abSolid,W);
       end;
     end;
   except
@@ -10221,22 +11141,73 @@ begin
   end;
 end;
 
+begin
+  try
+  // in the metafile of type EMF+ or EMF dual the comments start  with 4 bytes containing "EMF+"
+  // each comment starts with two bytes - EMF+CommentRecordType
+  // https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-emfplus/abffcb71-1b31-414f-b032-f1e00c57a48a
+  // Comment record type of comment  EmfPlusComment = 0x4003
+  if Byte(p^) = $45 then //lEMFPlus
+  begin
+    if PDWORD(p)^ = $2B464D45 then     // +FME
+    begin
+      lP := p + 4;
+      while lP < P + len  do
+      begin
+        lRecordType := PWord(lP)^;
+        Inc(lP,4);
+        lSize :=PDWORD(lP)^;   //Texture should be less than 65008 bytes!! (otherwise is bitmap splitted into more comments
+        Inc(lP,4);
+        lLen :=PDWORD(lP)^;
+        Inc(lP,4);
+        // only EmfPlusComment = 0x4003
+        if (lRecordType = $4003) and (AnsiChar((lP+1)^)='S') and (AnsiChar((lP+2)^)in ['I','T','P']) then
+        begin
+          handleCommentInner(TPdfGDIComment(Byte(lP^)), lP+1, lLen-1);
+        end;
+        inc(lP,lLen);
+      end;
+    end;
+  end
+  else begin
+    handleCommentInner(TPdfGDIComment(P), P+1, Len-1);
+  end;
+  except
+    on E: Exception do ; // ignore any error (continue EMF enumeration)
+  end;
+end;
+
+
+function TPdfEnum.CanBrushAndPen:boolean;
+begin
+  Result := not fInPath;
+end;
+
 procedure TPdfEnum.NeedBrushAndPen;
 begin
-  if fInlined then begin
-    fInlined := false;
-    Canvas.Stroke;
+  if not CanBrushAndPen then
+  begin
+    fStrokeColor := -1;
+    fPenWidth := -1;
+    fFillColor := -1;
+    fPenStyle := -1;
+  end
+  else begin
+    if fInlined then begin
+      fInlined := false;
+      Canvas.Stroke;
+    end;
+    NeedPen;
+    with DC[nDC] do
+    if not brush.null then
+      FillColor := brush.color;
   end;
-  NeedPen;
-  with DC[nDC] do
-  if not brush.null then
-    FillColor := brush.color;
 end;
 
 procedure TPdfEnum.NeedPen;
 begin
   with DC[nDC] do
-  if not pen.null then begin
+  if not pen.null and CanBrushAndPen then begin
     StrokeColor := pen.color;
     if pen.style<>fPenStyle then begin
       case pen.style and PS_STYLE_MASK of
@@ -10278,6 +11249,16 @@ begin
   Assert(nDC<high(DC));
   DC[nDC+1] := DC[nDC];
   inc(nDC);
+end;
+
+function TPdfEnum.getGClip:boolean;
+begin
+  result := DC[nDC].Clip;
+end;
+
+procedure TPdfEnum.setGClip(const pValue:boolean);
+begin
+  DC[nDC].Clip := pValue;
 end;
 
 procedure TPdfEnum.ScaleMatrix(Custom: PXForm; iMode: Integer);
@@ -10817,7 +11798,149 @@ end;
 
 {$endif USE_METAFILE}
 
-{$ifdef USE_BITMAP}
+ {$ifdef USE_BITMAP}
+
+{ TPdfPattern }
+ constructor TPdfPattern.Create(aCanvas: TPdfCanvas; aImageName: PdfString; DontAddToFXref: boolean);
+ var lStream : pdfString;
+     lSignX,lSignY,pInc,y: integer;
+     lImg : TPdfXObject ;
+     lCS,
+     lResourcesXObject : TPDfDictionary;
+     lScaleX,lScaleY,
+     lScale,lw,lh,a : single;
+     lXForm : XForm;
+     i, j, lmultx, lmulty : integer;
+     lPI2X, lP :TPointF;
+  function ScaleValue(pScale, p:single):single;
+  begin
+    Result := p;
+    if P <> 1 then
+      Result := p*pScale;
+  end;
+ begin
+  inherited Create(aCanvas.Doc,DontAddToFXref);
+  FResources := TPdfDictionary.Create(acanvas.Doc.FXref);
+  FResources.AddItem('ProcSet',TPdfArray.CreateNames(nil,['PDF','Text','ImageB']));
+  FPage := TPdfPage.Create(nil);
+  FCanvas := TPdfCanvas.Create(acanvas.Doc);
+  FCanvas.FPage:=FPage;
+  FCanvas.FContents := self;
+  FCanvas.FFactor := 1;
+  fXForm := aCanvas.TextureXFORM;
+  fWrapMode := aCanvas.TextureWrapMode;
+  fImageName := aImageName;
+  fPixelWidth := aCanvas.TextureBitmap.Width;
+  fPixelHeight := aCanvas.TextureBitmap.Height;
+  lmultx := 1;
+  lmulty := 1;
+  case fWrapMode of
+    SynWrapModeTileFlipX: lmultx := 2;
+    SynWrapModeTileFlipY: lmulty := 2;
+    SynWrapModeTileFlipXY: begin
+      lmultx := 2;
+      lmulty := 2;
+    end;
+  end;
+  fPixelWidth := fPixelWidth * lmultx;
+  fPixelHeight := fPixelHeight * lmulty;
+
+  FAttributes.AddItemTextString('Resources',inttostr(fResources.ObjectNumber) + ' ' + inttoStr(fResources.GenerationNumber) + ' R');
+  lImg :=  aCanvas.doc.GetXObject(aImageName);
+  with aCanvas.doc.fTextureList[aCanvas.TextureObjectID] do
+  begin
+    lSignX := sign(scaleX);
+    lSignY := sign(ScaleY);
+    lScaleX:= abs(ScaleX);
+    lScaleY:= abs(ScaleY);
+  end;
+
+//  if the pattern is 1 pixel height or 1 pixel width, keep unchanged this 1 pixel dimension
+   lP.X :=  lScaleX;
+
+  if fPixelWidth=1 then
+    lPI2X.X := aCanvas.I2X(fPixelHeight)
+  else
+//  end
+//  else begin
+    lPI2X.X := aCanvas.I2X(fPixelWidth);
+//  end;
+  lP.Y := lScaleY;
+  if fPixelHeight=1 then
+//  begin
+   lPI2X.Y := aCanvas.I2X(fPixelWidth)
+  else
+//  end
+//  else begin
+  lPI2X.Y := aCanvas.I2X(fPixelHeight);
+//  end;
+
+  lP.X := lP.X *lPI2X.X;
+  lP.Y := lP.Y *lPI2X.Y;
+  FAttributes.AddItem('Type','Pattern');
+  FAttributes.AddItem('PaintType',1);
+  FAttributes.AddItem('PatternType',1);
+  FAttributes.AddItem('TilingType',1);
+
+  FAttributes.AddItem('XStep',lP.X,6);
+  FAttributes.AddItem('YStep',lP.Y,6);
+  FAttributes.AddItem('BBox',TPdfArray.CreateReals(nil,[0,0,lP.X,lP.Y],6));
+  if lImg <> nil then
+  begin
+    fCanvas.gsave();
+
+    if (lSignY =-1) and (lSignX=-1)  then
+      fCanvas.ConcatToCtm( lPI2X.X/lmultx,0,0,lPI2X.Y/lmulty,lP.X,lP.Y)
+    else if (lSignY =-1) then
+      fCanvas.ConcatToCtm( lPI2X.X/lmultx,0,0,lPI2X.Y/lmulty,0,lP.Y)
+    else if (lSignX =-1) then
+      fCanvas.ConcatToCtm( lPI2X.X/lmultx,0,0,lPI2X.Y/lmulty,lP.X,0)
+    else
+      fCanvas.ConcatToCtm( lPI2X.X/lmultx,0,0,lPI2X.Y/lmulty,0,0) ;
+    fCanvas.ConcatToCtm( lSignX*lScaleX, 0,0,lSignY*lScaleY, 0, 0  );
+
+    fCanvas.ExecuteXObject(aImageName);
+    if fwrapMode in [SynWrapModeTileFlipX, SynWrapModeTileFlipXY] then
+    begin
+      fCanvas.gsave();
+      fCanvas.ConcatToCtm( -1,0,0,1, lmultx, 0  );
+      fCanvas.ExecuteXObject(aImageName);
+      fCanvas.grestore();
+    end;
+    if fwrapMode in [SynWrapModeTileFlipY, SynWrapModeTileFlipXY] then
+    begin
+      fCanvas.gsave();
+      fCanvas.ConcatToCtm( 1,0,0,-1, 0,lmulty  );
+      fCanvas.ExecuteXObject(aImageName);
+      if fwrapMode in [SynWrapModeTileFlipXY] then
+      begin
+        fCanvas.ConcatToCtm( -1,0,0,1, lmultx, 0  );
+        fCanvas.ExecuteXObject(aImageName);
+      end;
+      fCanvas.grestore();
+    end;
+    fCanvas.grestore();
+    lResourcesXObject := TPdfDictionary.Create(aCanvas.Doc.FXref);
+    lResourcesXObject.AddItem(aImageName,lImg);
+    FResources.AddItem('XObject',lResourcesXObject);
+    lCS := TPdfDictionary.Create(nil);
+
+    lCS.addItem('CS1'  ,TPdfArray.CreateNames(aCanvas.Doc.FXref,['Pattern','DeviceRGB']) );
+    FResources.AddItem('ColorSpace',lCS);
+    FAttributes.AddItem('Resources',fResources);
+  end
+
+end;
+destructor TPdfPattern.Destroy;
+begin
+  CloseCanvas;
+  inherited;
+end;
+procedure TPdfPattern.CloseCanvas;
+begin
+  FreeAndNil(FCanvas);
+  FreeAndNil(FPage);
+end;
 
 { TPdfImage }
 
@@ -11026,9 +12149,102 @@ begin
   FCanvas.FFactor := 1;
   FAttributes.AddItem('Type','XObject');
   FAttributes.AddItem('Subtype','Form');
-  FAttributes.AddItem('BBox',TPdfArray.Create(nil,[0,0,H,W]));
+  if adoc.canvas.useTexture then
+  begin
+//Width, height - it is boundingBox dimension
+//  reserve - inflate TPdfBox, W,H ) - it is possible to do more accurately
+    FAttributes.AddItem('BBox',TPdfArray.CreateReals(nil,[-(W+H),-(W+H), W + 2*(W+H),H + 2*(W+H)]));
+  end
+  else
+    FAttributes.AddItem('BBox',TPdfArray.Create(nil,[0,0,W,H]));
   FAttributes.AddItem('Matrix',TPdfRawText.Create('[1 0 0 1 0 0]'));
   FAttributes.AddItem('Resources',FResources);
+end;
+
+procedure TPdfFormWithCanvas.FillByTexture(aDoc: TPdfDocument; aImageName: pdfString);
+var lImg : TPdfXObject;
+    i,j : integer;
+    lP:TPointF;
+    lXForm: XForm;
+    lScale: single;
+    lResources,lResourcesXObject : TPdfDictionary;
+begin
+  lImg :=  adoc.GetXObject(aImageName);
+  if lImg <> nil then
+  begin
+     lResources := fAttributes.PdfDictionaryByName('Resources');
+     if not Assigned(lResources) then
+     begin
+       lResources := TPdfDictionary.Create(aDoc.FXref);
+       FAttributes.AddItem('Resources',lResources);
+     end;
+
+     lResourcesXObject := lResources.PdfDictionaryByName('XObject');
+     if not Assigned(lResourcesXObject) then
+     begin
+       lResourcesXObject := TPdfDictionary.Create(aDoc.FXref);
+       lResources.AddItem('XObject',lResourcesXObject);
+     end;
+
+     lResourcesXObject.AddItem(aImageName,lImg);
+
+    lXForm := aDoc.Canvas.TextureXFORM;
+     fCanvas.gsave;
+     lScale := aDoc.Canvas.I2X(Max(aDoc.Canvas.TextureBitmap.Width,aDoc.Canvas.TextureBitmap.Height));
+     fCanvas.ConcatToCTM( lXForm,6);
+
+     for j:= 0 to aDoc.Canvas.TextureTilesY - 1 do
+     begin
+       fCanvas.gsave;
+       for i:= 0 to aDoc.Canvas.TextureTilesX - 1 do
+       begin
+         if i = 0 then
+           fCanvas.ConcatToCTM(1,0,0,1,0,j {* aDoc.Canvas.TextureBitmap.Height},0)
+         else
+           fCanvas.ConcatToCTM(1,0,0,1, 1{aDoc.Canvas.TextureBitmap.Width}, 0,0);
+
+         fCanvas.ExecuteXObject(aImageName);
+       end;
+       fCanvas.Grestore;
+     end;
+     fCanvas.Grestore;
+
+  end;
+end;
+
+procedure TPdfFormWithCanvas.FillByPattern(aDoc: TPdfDocument; aPatternName: pdfString; aWidth,aHeight: single);
+var lPat : TPdfPattern;
+    lScale,lQ: single;
+    lResources,lResourcesPattern : TPdfDictionary;
+begin
+  lPat :=  adoc.GetPattern(aPatternName);
+  if lPat <> nil then
+  begin
+     lResources := fAttributes.PdfDictionaryByName('Resources');
+     if not Assigned(lResources) then
+     begin
+       lResources := TPdfDictionary.Create(aDoc.FXref);
+       FAttributes.AddItem('Resources',lResources);
+     end;
+
+     lResourcesPattern := lResources.PdfDictionaryByName('Pattern');
+     if not Assigned(lResourcesPattern) then
+     begin
+       lResourcesPattern := TPdfDictionary.Create(aDoc.FXref);
+       lResources.AddItem('Pattern',lResourcesPattern);
+     end;
+
+     lResourcesPattern.AddItem(aPatternName,lPat);
+  end;
+  fCanvas.GSave;
+
+  lScale := aDoc.Canvas.I2X(Max(aDoc.Canvas.TextureBitmap.Width,aDoc.Canvas.TextureBitmap.Height));
+  fCanvas.ConcatToCTM(lScale,0,0, lScale, 0, 0{aDoc.Canvas.TextureXForm.edy});
+  fCanvas.ExecutePattern(APatternName) ;
+  fCanvas.Rectangle(0,0,Max(aWidth,aHeight)/lScale,max(aWidth,aHeight)/lScale,6);
+  fCanvas.fill;
+  fCanvas.GRestore;
+
 end;
 
 destructor TPdfFormWithCanvas.Destroy;
@@ -11262,5 +12478,4 @@ finalization
   if (FontSub<>0) and (FontSub<>INVALID_HANDLE_VALUE) then
     FreeLibrary(FontSub);
 end.
-
 
