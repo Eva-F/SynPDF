@@ -1361,7 +1361,7 @@ type
 
   TTextureDetail=record
     textureID : word;
-    inheritFrom:Pdfstring;
+    inheritFrom:Pdfstring; // the name of source Pattern    (if exists)
     textureName : pdfString;
     patternType:TPdfPatternType;
     TilesX    : word;
