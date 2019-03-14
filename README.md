@@ -57,7 +57,7 @@ example of pdf:
            stream
            q
            2.419135 0.000000 0.000000 -2.365376 0.000000 7.096128 cm
-           *TilesPerX x TilesPerY times*
+           ...TilesPerX x TilesPerY times
            /SynImg0 Do
            ...
            endstream
