@@ -57,7 +57,7 @@ example of pdf:
            2.419135 0.000000 0.000000 -2.365376 0.000000 7.096128 cm
            *TilesPerX x TilesPerY times*
            /SynImg0 Do
-           *...*
+           ...
            endstream
            endobj
 ```           
@@ -69,7 +69,7 @@ example of pdf:
             <</Length 11532/Type/XObject/Subtype/Image/ColorSpace/DeviceRGB/Width 62/Height 62/BitsPerComponent 8
               /Name/SynImg0>>
             stream
-            *.. Bitmap data*
+            ... Bitmap data
             endstream
             endobj
   ```
@@ -83,8 +83,8 @@ example of pdf:
              /ColorSpace<</CS1\[/Pattern/DeviceRGB\]>>>>/Name/SynPat_1>>
              stream
              q
-             *.. pdf scale Transform* cm
-             *.. Pattern scale +FlipY Transform* cm
+             ... Pdf scale Transform cm
+             ... Pattern scale +FlipY Transform cm
              /SynImg2 Do
               Q
               endstream
@@ -107,7 +107,7 @@ example of pdf:
               /Pattern<</SynPat_1 9 0 R>>>>/Name/SynT_2>>
               stream
               q
-              *.. pdf Scale Transform* cm
+              ... pdf Scale Transform cm
               /Pattern cs
               /SynPat_1 scn
               0.000000 0.000000 5.992000 5.992000 re
@@ -122,7 +122,7 @@ example of pdf:
   ```
                q
                n
-               *.. Scale + Translate transform*  cm
+               ...Scale + Translate transform cm
                /SynT_0 Do
                f
                Q
@@ -131,7 +131,7 @@ example of pdf:
   ```
                q
                n
-               *..transform*  cm
+               ...transform  cm
                /Pattern cs
                /SynPat_1 scn
                0.000000 0.000000 5.992000 5.992000 re     (or path)
@@ -142,7 +142,7 @@ example of pdf:
   ```
                q
                n
-               *.. Rotation + translate Transform*  cm
+               ...Rotation + translate Transform  cm
                /SynT_2 Do
                f
                Q
