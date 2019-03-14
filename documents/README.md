@@ -2,7 +2,7 @@
 
 
 
-#### handle EMR_SelectClipPath record
+#### 1.handle EMR_SelectClipPath record
 
 
 
@@ -11,11 +11,11 @@
 
 
 
-#### add decimals accurency into TPdfReal
+#### 2.add decimals accurency into TPdfReal
 
 
 
-#### adding posibility to draw Texture/Pattern from Metafile 
+#### 3.adding posibility to draw Texture/Pattern from Metafile 
 Metafile GDIcomments contains information about texturebrush 
 
 using pattern/texture in pdf is convenient from several reason
@@ -23,7 +23,7 @@ using pattern/texture in pdf is convenient from several reason
 * **less memory(as wmf, so pdf)**
 * **less time consumption**
 
-* in the sample the used texture bitmaps have dimensions 62x62, 64x1 and 1x125*
+*in the sample the used texture bitmaps have dimensions 62x62, 64x1 and 1x125*
 
 
 ![PdfWithPattern](https://user-images.githubusercontent.com/3242659/54348957-87b7ba80-464a-11e9-84f3-fb704d651b10.png)
