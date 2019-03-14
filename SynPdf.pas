@@ -2364,6 +2364,7 @@ type
   // followed by the corresponding bookmark name
   // - use the GDIComment*() functions to append the corresponding
   // EMR_GDICOMMENT message to a metafile content
+  //
   // pgcTextureBMP - in the form 'SI' + Unique identifier of bitmap pattern/texture( word=2bytes) + bitmap data
   //                 ! the size of bitmapa cannot exceed 64000 bytes
   //                 this comment - definition of pattern / texture bitmap has to be send before the comment
