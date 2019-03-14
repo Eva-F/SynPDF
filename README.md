@@ -1,6 +1,8 @@
 SynPDF
 ======
 
+*the pdf samples are in documents*
+
 #### add the implementation of texture brush from a metafile.
 ###### *short remark:*
 * *In my project I have to generate and include into pdf many pictures (from ten to hundreds - depends on customer design) and the pictures have to be very readable and illustrative and of course the smallest as possible. Therefore I use texture brush for drawing them. (f.e. brush n x 1 pixels).The drawing picture is stored as metafile (.wmf), that can be rendered into pdf.*
