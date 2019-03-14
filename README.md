@@ -1,57 +1,117 @@
 SynPDF
 ======
 
-Synopse PDF engine is a fully featured *Open Source* PDF document creation library for Delphi and FPC, embedded in one unit.
+###add the implementation of texture brush from a metafile.
+###### *short remark: *
+* In my project I have to generate and include into pdf many pictures (from ten to hundreds - depends on customer design) and the pictures have to be very readable and illustrative and of course the smallest as possible,Therefore I use texture brush for drawing them. (f.e. brush n x 1 pixels).The drawing picture is stored as metafile (.wmf), that can be rendered into pdf. *
+*But a recognization of texture brush bitmap from metafile is difficult and time/memory consuming because rounding color leads to similiar (but not equal) bitmaps.*
+*Therefore I decided to such step: instead of real texture brush to use dummy brush of 1x1 pixel(to minimalize wmf metafile itself) and add into GDI comments information about bitmap, that will be used as texture brush for filling shapes right in pdf *
+* pdf has the tools for texture/pattern brush - there are Pattern and XObject/Form *
 
-It's used e.g. in our [*mORMot* framework](https://github.com/synopse/mORMot), for creating PDF files from generated reports. 
-But you can use it stand-alone, without our main ORM/SOA framework.
+There are two types of texturebrush information in GDI comment:
+1. has to be added into comment before using of render bitmap and contains TextureBMP unique ID and Bitmap data in the form:
+     pgcTextureBitmap      1byte 
+     'SI'                  2bytes
+     TextureBMPUniqueID    2bytes
+     bitmap data 
+2. has to be added into GDI comment before each using of dummy brush(1x1) and contais instruction how to transform texture brush for filling next shape
+     pgcTextureID         1byte    or pgcPatternID
+     'ST'                 2bytes   or 'SP'
+     TextureBMPUniqueID   2bytes 
+     TilesPerX            2bytes
+     TilesPerY            2bytes
+     WrapMode             2bytes
+     ScaleX               4bytes  (single)
+     ScaleY               4bytes  (single)
+     Angle                4bytes  (single) - in degrees
 
-If you download the whole *mORMot* source code, you do not need this separate package: ensure you get rid of any existing separated *SynPDF* installation, and use the PDF units as available in the main *mORMot* trunk.
-This *SynPDF* distribution/GitHub account targets only people needing PDF writing, without other *mORMot* features, under Delphi (some files may be missing for FPC).
+there are distinguished two kind of brush pgcTextureID - (defines something like stamp - for accurate filling) and pgcPatternID for standard brush 
 
-If you plan using any part of the framework (e.g. *SynLog*, *SynDB* or the *ORM*/*SOA*), don't use this repository, but use the main [*mORMot* framework](https://github.com/synopse/mORMot). Having the two repositories on the same environement may be a source of unexpected version conflict. Just use and trust the main *mORMot* repository, which will be updated much more often.
+in the pdf is possible to handle brush by these way:
+1. pgcTextureID into XObject Form
+2. pgcPatternID into Pattern (dimensionless)
+3. pgcPatternID into Pattern (dimensionless) and on its base register XObject Form (this way is convenient for filling of  rotated shapes
 
-Features
---------
 
-  * Pure Delphi code, with no external .dll, and adding very small code size to your executable;
-  * Targets Delphi 5 up to Delphi 10.3 Rio (and latest version of FPC), for Win32 and Win64 platforms, with full source code provided;
-  * Includes most vectorial drawing commands, including text,lines or curves;
-  * Renders bitmaps, and metafiles (even most .emf files with clipping and regioning);
-  * Introduce metadata, bookmarks and outline information;
-  * Produce very small .pdf files;
-  * Optionally [encrypt and secure the .pdf content](http://blog.synopse.info/post/2013/06/19/SynPDF-now-implements-40-bit-and-128-bit-security) using 40 bit or 128 bit keys;
-  * Fast file generation with low memory overhead (tested with several thousands of pages);
-  * Access a true VCL TCanvas instance to create the PDF content;
-  * Optionally embed True Type fonts subsets;
-  * Unicode ready, even with pre-Unicode versions of Delphi, including advanced [Uniscribe Glyph shading and Font fallback](http://blog.synopse.info/tag/Uniscribe);
-  * Can publish PDF/A-1 archive files;
-  * Used in a lot of applications, with regular enhancements, mainly from active end-users;
-  * Licensed under a [MPL/GPL/LGPL tri-license](https://synopse.info/forum/viewtopic.php?id=27).
+...example of pdf:
+ **Page Resources**
+ Resources<</Font<<>>/XObject<</SynImg0 6 0 R/SynT_0 7 0 R/SynImg2 8 0 R/SynT_2 10 0 R>>/Pattern<</SynPat_1 9 0 R>>/ProcSet\[/PDF/Text/ImageC\]>>/Contents 5 0 R>>
+  
+  **1. pgcTextureID /SynT_0 7 0 R**
+           7 0 obj
+           <</Length 479/Type/XObject/Subtype/Form/BBox\[-496 -496 1302 1178\]/Matrix \[1 0 0 1 0 0\]/Resources<</Font<<>>/ProcSet\[/PDF/Text/ImageC\]/XObject<</SynImg0 6 0 R>>>>/Name/SynT_0>>
+           stream
+           q
+           2.419135 0.000000 0.000000 -2.365376 0.000000 7.096128 cm
+           *TilesPerX x TilesPerY times*
+           /SynImg0 Do
+           *...*
+           endstream
+           endobj
+  *where SynImg0 is TextureBitmap registered as PdfImage*
+  **XObject Image /SynImg0 6 0 obj**
+            6 0 obj
+            <</Length 11532/Type/XObject/Subtype/Image/ColorSpace/DeviceRGB/Width 62/Height 62/BitsPerComponent 8/Name/SynImg0>>
+            stream
+            *.. Bitmap data*
+            endstream
+            endobj
+  
+  **2.pgcPatternID  /SynPat_1 9 0 R**
+             9 0 obj
+             <</Length 131/Type/Pattern/PaintType 1/PatternType 1/TilingType 1/XStep 46.715023/YStep 3.397456/BBox\[0.000 0.000 46.715023 3.397456\]/Resources<</ProcSet\[/PDF/Text/ImageB\]/XObject<</SynImg2 8 0 R>>/ColorSpace<</CS1\[/Pattern/DeviceRGB\]>>>>/Name/SynPat_1>>
+             stream
+             q
+             *.. pdf scale Transform* cm
+             *.. Pattern scale +FlipY Transform* cm
+             /SynImg2 Do
+              Q
+              endstream
+              endobj
+  *where SynImg2 is TextureBitmap registered as PdfImage*
+  **XObject Image /SynImg2 8 0 obj**
+              8 0 obj
+              <</Length 375/Type/XObject/Subtype/Image/ColorSpace/DeviceRGB/Width 1/Height 125/BitsPerComponent 8/Name/SynImg2>>
+  
+  **3.Texture defined on the base of dimensionless Pattern /SynT_2 10 0 R**
+              10 0 obj
+              <</Length 128/Type/XObject/Subtype/Form/BBox\[-49 -49 144 101\]/Matrix \[1 0 0 1 0 0\]/Resources<</Font<<>>/ProcSet\[/PDF/Text/ImageC\]/Pattern<</SynPat_1 9 0 R>>>>/Name/SynT_2>>
+              stream
+              q
+              *.. pdf Scale Transform* cm
+              /Pattern cs
+              /SynPat_1 scn
+              0.000000 0.000000 5.992000 5.992000 re
+              f
+              Q
+              endstream
+              endobj
+  
+  
+  ####**usage defined brushes in content stream **
+  ** 1. pgcTextureID /SynT_0 7 0 R**
+               q
+               n
+               *.. Scale + Translate transform*  cm
+               /SynT_0 Do
+               f
+               Q
+  **2.pgcPatternID  /SynPat_1 9 0 R**               
+               q
+               n
+               *..transform*  cm
+               /Pattern cs
+               /SynPat_1 scn
+               0.000000 0.000000 5.992000 5.992000 re     (or path)
+               f
+               Q
+  **3.Texture defined on the base of dimensionless Pattern /SynT_2 10 0 R**
+               q
+               n
+               *.. Rotation + translate Transform*  cm
+               /SynT_2 Do
+               f
+               Q
 
-Sample code
------------
 
-In fact, you have at least three ways of generating pdfs using the library:
-  * [Directly call](https://synopse.info/forum/viewtopic.php?pid=370#p370) of a `TPdfCanvas` as published by a `TPdfDocument` instance - this is the most direct but also more difficult way of rendering;
-  * [Use regular VCL `TCanvas` methods](https://synopse.info/forum/viewtopic.php?pid=1909#p1909) thanks to `TMetaFile` support - see `TPdfDocumentGDI.VCLCanvas` property and the `TPdfCanvas.RenderMetaFile` method - this is very easy if you want to use "regular" `TCanvas` methods to draw the page content, especially if you have some existing printing code;
-  * [Use `TGDIPages` of the supplied `mORMotReport.pas` unit](http://blog.synopse.info/post/2010/06/30/Making-report-from-code) (extracted from our *mORMot* ORM/SOA framework) to easily create the content from code, with some report-oriented methods (including complex rtf with `TGDIPages.AppendRichEdit`) - for basic reporting features, it is pretty much the solution.
-
-The 2nd and 3rd ways are preferred, for most applications.
-
-Documentation
--------------
-
-For detailed documentation of the unit, see the corresponding pages in the "[Software Architecture Document](https://synopse.info/fossil/wiki?name=Downloads)" of *mORMot* official documentation, or directly in the interface part of the unit, as methods comments. 
-
-Including the report generation pages within the "*SynFile Main Demo*" description.
-
-Dedicated blog and forum
-------------------------
-
-A blog is available at http://blog.synopse.info, and will notify any evolution of this component.
-
-A forum is dedicated to this component, and is available on [https://synopse.info](https://synopse.info/forum/viewforum.php?id=1)
-
-This is the main entry point for support: first search for an existing answer, then ask your question in a new thread.
 
