@@ -19,9 +19,13 @@
 Metafile GDIcomments contains information about texturebrush 
 
 using pattern/texture in pdf is convenient from several reason
-* better quality
-* less memory(as wmf, so pdf)
-* less time consumption
+* **better quality**
+* **less memory(as wmf, so pdf)**
+* **less time consumption**
+
+* in the sample the used texture bitmaps have dimensions 62x62, 64x1 and 1x125*
+
+
 ![PdfWithPattern](https://user-images.githubusercontent.com/3242659/54348957-87b7ba80-464a-11e9-84f3-fb704d651b10.png)
 ![PDFWithoutPattern](https://user-images.githubusercontent.com/3242659/54348959-87b7ba80-464a-11e9-9561-c7711b18a8a6.png)
 
