@@ -2388,9 +2388,9 @@ type
   //                            ScaleY  (4 bytes) - single
   //                            Angle   (4 bytes) - single - in degrees
 
-
+  // to avoid #0
   TPdfGDIComment =
-    (pgcOutline, pgcBookmark, pgcLink, pgcLinkNoBorder,pgcTextureBMP, pgcTextureID,  pgcPatternID);
+    (pgcNone, pgcOutline, pgcBookmark, pgcLink, pgcLinkNoBorder,pgcTextureBMP, pgcTextureID,  pgcPatternID);
 
   /// a dictionary wrapper class for the PDF document information fields
   // - all values use the generic VCL string type, and will be encoded
@@ -6449,10 +6449,10 @@ begin
     begin
       for i := High(FTextureBMPs) downto 0 do
         FTextureBMPs[i].textureMS.Free;
-      FreeAndNil(FTextureBMPs);
+      Finalize(FTextureBMPs);
     end;
     if fTextureList<>nil then
-     FreeAndNil(fTextureList);
+     Finalize(fTextureList);
 
     for i := FFontList.Count-1 downto 0 do
       TObject(FFontList.List[i]).Free;
@@ -6961,7 +6961,7 @@ begin
       begin
         if canvas.useTexture then
           Canvas.DrawPatternEx(lShape.Left,lShape.Top,Width,Height,
-            ClipRc^.Left,ClipRc^.Top,ClipRc^.Width,ClipRc^.Height, result, lTextureName)
+            lShape.Left,lShape.Top,Width,Height, result, lTextureName)
         else
           Canvas.DrawXObjectEx(Left,Top,Width,Height,
             ClipRc^.Left,ClipRc^.Top,ClipRc^.Width,ClipRc^.Height, result)
@@ -7769,13 +7769,14 @@ begin
   begin
     // use only rotation and shift vertex of BoundRect
     ConcatToCTM(lc, ls, -ls, lc, X, Y);
-    lScale := I2X(Max(TextureBitmap.Width,TextureBitmap.Height));
+    lScale := Max(I2X(TextureBitmap.Width)-FOffsetXDef,I2Y(TextureBitmap.Height)-(FPage.GetPageHeight -  FOffsetYDef));
     ExecuteXObject(APatternName);
   end
   else begin
     // shift vertex of the boundary rect to the vertex of the rotated shape
     // an angle of rotation is considered only in (-PI/2,PI/2)
-    lScale := I2X(Max(TextureBitmap.Width,TextureBitmap.Height));
+    lScale := Max(I2X(TextureBitmap.Width)-FOffsetXDef,I2Y(TextureBitmap.Height)-(FPage.GetPageHeight -  FOffsetYDef));
+//    lScale := I2X(Max(TextureBitmap.Width,TextureBitmap.Height));
     ConcatToCTM(lScale, 0, 0, lScale,  X,  Y);
     ExecuteXObject(APatternName);
   end;
@@ -7797,9 +7798,10 @@ begin
 // own clip preceeds EMR_STRETCHDIBITS  ( if the shape isn't rectangle) in a metafile
 // therefore isn't useful to overwrite by the parent clip region
 // EMR_SaveDC->EMR_BeginPath->EMR_(poly)PolyGon(16)->EMR_EndPath->EMR_SelectClipPath->EMRStretchDIBits
-//  Rectangle(ClipX, ClipY, ClipWidth, ClipHeight);
-//  Clip;
-//  NewPath;
+// if EMR_SetClipPath is missing, clip to bound
+  Rectangle(ClipX, ClipY, ClipWidth, ClipHeight);
+  Clip;
+  NewPath;
 //  fNewPath := False;
 
   lc := cos(doc.fTextureList[TextureObjectID].angle);
@@ -7811,7 +7813,8 @@ begin
     ExecuteXObject(APatternName);
   end
   else begin
-    lScale := I2X(Max(TextureBitmap.Width,TextureBitmap.Height));
+    // offset independent 
+    lScale := Max(I2X(TextureBitmap.Width)-FOffsetXDef,I2Y(TextureBitmap.Height)-(FPage.GetPageHeight -  FOffsetYDef));
     // shift vertex of the boundary rect to the vertex of the rotated shape
     // an angle of rotation is expected in (-PI/2,PI/2)
     ConcatToCTM(lScale, 0, 0, lScale,  X,  Y);
@@ -11794,20 +11797,20 @@ end;
    lP.X :=  lScaleX;
 
   if fPixelWidth=1 then
-    lPI2X.X := aCanvas.I2X(fPixelHeight)
+    lPI2X.X := aCanvas.I2X(fPixelHeight)- aCanvas.FOffsetXDef
   else
 //  end
 //  else begin
-    lPI2X.X := aCanvas.I2X(fPixelWidth);
+    lPI2X.X := aCanvas.I2X(fPixelWidth)- aCanvas.FOffsetXDef;
 //  end;
   lP.Y := lScaleY;
   if fPixelHeight=1 then
 //  begin
-   lPI2X.Y := aCanvas.I2X(fPixelWidth)
+   lPI2X.Y := aCanvas.I2Y(fPixelWidth)-(aCanvas.FPage.GetPageHeight -  aCanvas.FOffsetYDef)
   else
 //  end
 //  else begin
-  lPI2X.Y := aCanvas.I2X(fPixelHeight);
+  lPI2X.Y := aCanvas.I2Y(fPixelHeight)-(aCanvas.FPage.GetPageHeight -  aCanvas.FOffsetYDef);
 //  end;
 
   lP.X := lP.X *lPI2X.X;
@@ -12125,7 +12128,7 @@ begin
 
     lXForm := aDoc.Canvas.TextureXFORM;
      fCanvas.gsave;
-     lScale := aDoc.Canvas.I2X(Max(aDoc.Canvas.TextureBitmap.Width,aDoc.Canvas.TextureBitmap.Height));
+     lScale := Max(aDoc.Canvas.I2X(aDoc.Canvas.TextureBitmap.Width)-aDoc.Canvas.FOffsetXDef,aDoc.Canvas.I2Y(aDoc.Canvas.TextureBitmap.Height)-(aDoc.Canvas.FPage.GetPageHeight -  aDoc.Canvas.FOffsetYDef));
      fCanvas.ConcatToCTM( lXForm,6);
 
      for j:= 0 to aDoc.Canvas.TextureTilesY - 1 do
