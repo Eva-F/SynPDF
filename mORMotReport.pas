@@ -61,7 +61,7 @@ unit mORMotReport;
  Date:            25-MAY-2004 (initial version)
  Target:          Win32, Delphi 3 - Delphi 7
  Author:          Angus Johnson, http://www.angusj.com
- Copyright        © 2003 Angus Johnson
+ Copyright        Â© 2003 Angus Johnson
 
  Notes:
    * TGDIPages is designed as a simple lightweight report writer. Reports are
@@ -111,7 +111,7 @@ unit mORMotReport;
   - full Unicode text process (even before Delphi 2009)
   - speed up and various bug fixes to work with Delphi 5 up to XE3
 
-  Modifications © 2009-2019 Arnaud Bouchez
+  Modifications Â© 2009-2019 Arnaud Bouchez
 
   Version 1.4 - February 8, 2010
   - whole Synopse SQLite3 database framework released under the GNU Lesser
@@ -257,9 +257,18 @@ const
   PAGENUMBER = '<<pagenumber>>';
 
 type
-
+  /// metafile that should be rendered directly into PDF
+  /// it is useless to render it into GDIPages.Canvas - the GDI comments about textures/pattern would be lost
+  /// information about metafile is kept at pages[i]
+  TMetaFileExternal = record
+    MetafileName : SynUnicode;
+    Bound : TRect;
+  end;
   /// text paragraph alignment
   TTextAlign = (taLeft,taRight,taCenter,taJustified);
+
+  /// verical text alignment
+  TVerticalTextAlign = (tvaTop,tvaMiddle,tvaBottom,tvaBaseLine);
 
   /// text column alignment
   TColAlign = (caLeft,caRight,caCenter, caCurrency);
@@ -275,6 +284,9 @@ type
 
   /// Event triggered when a new page is added
   TNewPageEvent = procedure(Sender: TObject; PageNumber: integer) of object;
+
+  /// Event triggered when a metafile should be rendered
+  TRenderMetafileEvent = procedure(Sender: TObject; aMetaFileExt: TMetaFileExternal; aCanvas: TPdfCanvas ) of object;
 
   /// Event triggered when the Zoom was changed
   TZoomChangedEvent = procedure(Sender: TObject;
@@ -307,6 +319,8 @@ type
   public
     Text: SynUnicode;
     State: TSavedState;
+    // Linespacing for Header/Footer
+    LineSpacing : TLineSpacing;
     /// initialize the header or footer parameters with current report state
     constructor Create(Report: TGDIPages; doubleline: boolean;
       const aText: SynUnicode=''; IsText: boolean=false);
@@ -317,6 +331,8 @@ type
     ColLeft, ColRight: integer;
     ColAlign: TColAlign;
     ColBold: boolean;
+    // index of Column Style
+    ColStyle: integer;
   end;
 
   TPopupMenuClass = class of TPopupMenu;
@@ -351,6 +367,8 @@ type
     MetaFileCompressed: RawByteString;
     /// text equivalent of the page
     Text: string;
+    // the array of metafiles that has to be rendered directly into pdf
+    Metafiles:array of TMetaFileExternal;
     /// the physical page size
     SizePx: TPoint;
     /// margin of the page
@@ -389,6 +407,8 @@ type
     fColumnHeaderList: array of record
       headers: TSynUnicodeDynArray;
       flags: integer;
+      // index of Column header style
+      style:integer;
     end;
 {$ifdef MOUSE_CLICK_PERFORM_ZOOM}
     fZoomTimer: TTimer;
@@ -402,12 +422,15 @@ type
     fCurrPreviewPage: integer;
     fZoomIn: boolean;
     fLineHeight: integer;              //Text line height
+    // linespacing of Header/Footer
+    fHeaderFooterLinespacing,
     fLineSpacing: TLineSpacing;
     fCurrentYPos: integer;
     fCurrentTextTop, fCurrentTextPage: integer;
     fHeaderHeight: integer;
     fHangIndent: integer;
     fAlign: TTextAlign;
+    fVerticalAlign:TVerticalTextAlign;
     fBiDiMode: TBiDiMode;
     fPageMarginsPx: TRect;
     fHasPrinterInstalled: boolean;
@@ -461,6 +484,7 @@ type
     fZoomChangedEvent: TZoomChangedEvent;
     fPreviewPageChangedEvent: TNotifyEvent;
     fStartNewPage: TNewPageEvent;
+    fRenderMetafile : TRenderMetafileEvent;
     fStartPageHeader: TNotifyEvent;
     fEndPageHeader: TNotifyEvent;
     fStartPageFooter: TNotifyEvent;
@@ -468,6 +492,8 @@ type
     fStartColumnHeader: TNotifyEvent;
     fEndColumnHeader: TNotifyEvent;
     fSavedCount: integer;
+    // the styles are stored in JSON object
+    fStyles : Variant;
     fSaved: array of TSavedState;
     fTab: array of integer;
     fColumnsWithBottomGrayLine: boolean;
@@ -493,6 +519,7 @@ type
     function  GetOrientation: TPrinterOrientation;
     procedure SetOrientation(orientation: TPrinterOrientation);
     procedure SetTextAlign(Value: TTextAlign);
+    procedure SetVerticalTextAlign(Value: TVerticalTextAlign);
     procedure SetPage(NewPreviewPage: integer);
     function  GetPageCount: integer;
     function  GetLineHeight: integer;
@@ -700,6 +727,9 @@ type
     procedure DrawAngledTextAt(const s: SynUnicode; XPos, Angle: integer);
     /// draw a square box at the given coordinates
     procedure DrawBox(left,top,right,bottom: integer);
+    //  draw a rounded box at the given coordinates
+    // if aPenWidth = false - then is taken Pen.width value otherwise is Pen.width set on the base of Font.size
+    procedure DrawRoundBox(left,top,right,bottom: integer; aRadiusX, aRadiusY:integer; aPenWidth : boolean=true);
     /// draw a filled square box at the given coordinates
     procedure DrawBoxFilled(left,top,right,bottom: integer; Color: TColor);
     /// Stretch draws a bitmap image at the specified page coordinates in mm's
@@ -819,6 +849,31 @@ type
     /// returns true if there is enough space in the current Report for a
     // vertical size, specified in mm
     function  HasSpaceFor(mm: integer): boolean;
+    /// set a text style (Font properties, aligning) by its name
+    procedure setStyle(aName:RawUTF8);overload;
+    /// set a text style (Font properties, aligning) by its index in fStyles json object
+    procedure setStyle(aIdx:integer);overload;
+    /// add a new text style (Font properties, aligning)
+    // aStyle can be uncompleted - missing properties are taken from current text settings
+    // aStyle properties
+    //         - Name          = Font.Name      SynUnicode
+    //         - Size          = Font.Size      integer
+    //         - Color         = Font.Color     TColor
+    //         - FontStyle     = Font.Style     array of FontStyle - f.e. [ord(fsBold), ord(fsUnderline)]
+    //         - TextAlign     = TextAlign      TTextAlign
+    //         - VerticalAlign = VerticalAlign  TVerticalAlign
+    procedure AddStyle(aStyleName:RawUTF8; aStyle:Variant);overload;
+    /// add a new text style (Font properties, aligning) from current text settings
+    procedure AddStyle(aStyleName:RawUTF8);overload;
+    /// return  a text style index by its name
+    function getStyleIdx(aName:RawUTF8):integer;
+    /// remove all text styles
+    procedure clearStyles;
+    /// return vertical shift according to verticalAlign constant
+    function getVerticalAlign(aColVAlign: TVerticalTextAlign; aTM:TTextMetric): integer;
+    /// return current text metrics
+    function GetCurTextMetrics: TTextMetric;
+
 
     /// Clear all already predefined Headers
     procedure ClearHeaders;
@@ -826,7 +881,8 @@ type
     // right page margins) to the page header
     procedure AddLineToHeader(doubleline: boolean);
     /// Adds text using to current font and alignment to the page header
-    procedure AddTextToHeader(const s: SynUnicode);
+    // and Header linespacing
+    procedure AddTextToHeader(const s: SynUnicode; aLineSpacing:TLineSpacing=lsSingle);
     /// Adds text to the page header at the specified horizontal position and
     // using to current font.
     // - No Line feed will be triggered: this method doesn't increment the YPos,
@@ -840,7 +896,8 @@ type
     // right page margins) to the page footer
     procedure AddLineToFooter(doubleline: boolean);
     /// Adds text using to current font and alignment to the page footer
-    procedure AddTextToFooter(const s: SynUnicode);
+    // and Footer linespacing
+    procedure AddTextToFooter(const s: SynUnicode; aLineSpacing:TLineSpacing=lsSingle);
     /// Adds text to the page footer at the specified horizontal position and
     // using to current font. No Line feed will be triggered.
     // - if XPos=-1, will put the text at the current right margin
@@ -855,7 +912,8 @@ type
       YPosMultiplier: integer=1);
 
     /// register a column, with proper alignment
-    procedure AddColumn(left, right: integer; align: TColAlign; bold: boolean);
+    // and column text style
+    procedure AddColumn(left, right: integer; align: TColAlign; bold: boolean; style:integer=-1);
     /// register same alignement columns, with percentage of page column width
     // - sum of all percent width should be 100, but can be of any value
     // - negative widths are converted into absolute values, but
@@ -863,15 +921,18 @@ type
     // - if a column need to be right aligned or currency aligned,
     // use SetColumnAlign() method below
     // - individual column may be printed in bold with SetColumnBold() method
-    procedure AddColumns(const PercentWidth: array of integer; align: TColAlign=caLeft);
+    // - and common text style
+    procedure AddColumns(const PercentWidth: array of integer; align: TColAlign=caLeft; style:integer=-1);
     /// register some column headers, with the current font formating
     // - Column headers will appear just above the first text output in
     // columns on each page
     // - you can call this method several times in order to have diverse
     // font formats across the column headers
+    // column header can have own text style, otherwise is taken column text style (if is set)
     procedure AddColumnHeaders(const headers: array of SynUnicode;
-      WithBottomGrayLine: boolean=false; BoldFont: boolean=false;
-      RowLineHeight: integer=0; flags: integer=0);
+  WithBottomGrayLine: boolean=false; BoldFont: boolean=false;
+  RowLineHeight: integer=0; flags: integer=0;style: integer = -1);
+
     /// register some column headers, with the current font formating
     // - Column headers will appear just above the first text output in
     // columns on each page
@@ -953,6 +1014,8 @@ type
     function TextWidth(const Text: SynUnicode): integer;
     /// the current Text Alignment, during text adding
     property TextAlign: TTextAlign read fAlign write SetTextAlign;
+    /// the current Vertical Alignment, during text adding
+    property VerticalTextalign: TVerticalTextAlign read fVerticalAlign write SetVerticalTextAlign;
     /// specifies the reading order (bidirectional mode) of the box
     // - only bdLeftToRight and bdRightToLeft are handled
     // - this will be used by DrawText[At], DrawTitle, AddTextToHeader/Footer[At],
@@ -1134,6 +1197,11 @@ type
     /// Event triggered when each new page is created
     property OnNewPage: TNewPageEvent
       read fStartNewPage write fStartNewPage;
+
+    /// Event triggered when Page is rendered into PDF
+    property OnRenderMetafile: TRenderMetafileEvent
+      read fRenderMetafile write fRenderMetafile;
+
     /// Event triggered when each new header is about to be drawn
     property OnStartPageHeader: TNotifyEvent
       read fStartPageHeader write fStartPageHeader;
@@ -1993,6 +2061,12 @@ begin
     fAlign := Value;
 end;
 
+procedure TGDIPages.SetVerticalTextAlign(Value: TVerticalTextAlign);
+begin
+  if Self<>nil then
+    fVerticalAlign := Value;
+end;
+
 procedure TGDIPages.SetOrientation(orientation: TPrinterOrientation);
 begin
   if (Self<>nil) and (fOrientation<>orientation) then begin
@@ -2078,24 +2152,22 @@ end;
 function TGDIPages.GetLineHeight: integer;
 var tm: TTextMetric;
     DC: HDC;
+    lLineSpacing:TLineSpacing;
 begin
   if Self=nil then begin
     result := 0;
     exit;
   end;
   if fLineHeight = 0 then begin
-    if not Assigned(fCanvas) then begin
-      // if no current fCanvas: use the Screen resolution (very fast)
-      DC := GetDC(0);
-      GetTextMetrics(DC,tm);
-      ReleaseDC(0,DC);
-    end else
-      GetTextMetrics(fCanvas.Handle,tm);
+    tm := GetCurTextMetrics;
     fLineHeight := ((tm.tmHeight+tm.tmExternalLeading)*9)shr 3;
   end;
   if fInHeaderOrFooter then
-    result := fLineHeight else
-    case fLineSpacing of
+    lLineSpacing := fHeaderFooterLineSpacing
+  else
+    lLineSpacing := fLineSpacing;
+
+    case lLineSpacing of
       lsSingle:     result := fLineHeight;
       lsOneAndHalf: result := (fLineHeight*3) shr 1;
       else          result := fLineHeight*2;
@@ -2238,6 +2310,7 @@ begin
   //NewPage.MMHeight := (fPhysicalSizePx.y*2540) div fPrinterPxPerInch.y;
   n := Length(fPages)+1;
   SetLength(fPages,n);
+  SetLength(fPages[n-1].Metafiles,0);
   fCurrentMetaFile := CreateMetaFile(fPhysicalSizePx.x,fPhysicalSizePx.y);
   fCanvas := CreateMetafileCanvas(fCurrentMetaFile);
   fCanvasText := '';
@@ -2390,6 +2463,7 @@ begin
       with THeaderFooter(Lines[i]) do
       begin
         SavedState := State;
+        fHeaderFooterLineSpacing := LineSpacing;
         PrintFormattedLine(Text, State.Flags);
       end;
   finally
@@ -2417,10 +2491,11 @@ end;
 
 procedure TGDIPages.PrintColumnHeaders;
 var
-  i,SavedFontSize,FontCol: integer;
+  i,j,SavedFontSize,FontCol: integer;
   SavedFontStyle: TFontStyles;
   SavedAlign: TTextAlign;
   SavedWordWrapLeftCols: boolean;
+  lColumns: array of TColRec;
 
 begin
   if (fColumnHeaderList = nil) or (fColumns=nil) then exit;
@@ -2431,17 +2506,30 @@ begin
   SavedFontStyle := font.style;
   SavedAlign := fAlign;
   SavedWordWrapLeftCols := WordWrapLeftCols;
-  WordWrapLeftCols := false;
+ // wordwrap is allowed also for column headers
+ // WordWrapLeftCols := false;
 
   if Assigned(fStartColumnHeader) then
     fStartColumnHeader(Self);
   FontCol := fCanvas.Font.Color;
+  // create local copy of Columns
+  setLength(lColumns,length(fColumns));
+  for i:= 0 to high(fColumns) do
+    lColumns[i] := fColumns[i];
   for i := 0 to High(fColumnHeaderList) do begin
     SetFontWithFlags(fColumnHeaderList[i].flags);
-    fCanvas.Font.Color := clBlack;
+   // if own textstyle of columnHeaders is set, use it
+   if fColumnHeaderList[i].style <> -1 then
+     for j:= 0 to high(fColumns) do
+       fColumns[j].ColStyle := fColumnHeaderList[i].style;
+
     fDrawTextAcrossColsDrawingHeader := true;
     DrawTextAcrossCols(fColumnHeaderList[i].headers,[],clNone);
     fDrawTextAcrossColsDrawingHeader := false;
+    // if own textstyle of columnHeaders is set, return origin style of fColumns
+    if fColumnHeaderList[i].style <> -1 then
+      for j:= 0 to high(fColumns) do
+       fColumns[j].ColStyle := lColumns[j].ColStyle;
   end;
   fCanvas.Font.Color := FontCol;
   if Assigned(fEndColumnHeader) then
@@ -3444,6 +3532,26 @@ begin
   end;
 end;
 
+procedure TGDIPages.DrawRoundBox(left,top,right,bottom: integer; aRadiusX,aRadiusY:integer; aPenWidth : boolean);
+begin
+  if Self=nil then exit; // avoid GPF
+  CheckHeaderDone;
+  left := MmToPrinterPxX(left);
+  top := MmToPrinterPxY(top);
+  right := MmToPrinterPxX(right);
+  bottom := MmToPrinterPxY(bottom);
+  with fCanvas do begin
+    if aPenWidth then
+    begin
+      Pen.Width := MulDiv(fDefaultLineWidth,Self.Font.Size,8);
+      if fsBold in Self.Font.style then
+        Pen.Width := Pen.Width +1;
+    end;
+
+    RoundRect(left,top,right,bottom,MmToPrinterPxX(aRadiusX),MmToPrinterPxX(aRadiusY));
+  end;
+end;
+
 procedure TGDIPages.DrawBoxFilled(left,top,right,bottom: integer; Color: TColor);
 var SavedBrushColor: TColor;
 begin
@@ -3576,8 +3684,9 @@ begin
   if aAtTop then
     Y := fCurrentYPos - 1 else
     Y := fCurrentYPos + fLineHeight + 1;
+  // a small overlap of columnline to get continuous line
   with fColumns[ColIndex] do
-    LineInternal(Y, ColLeft, ColRight, aDoDoubleLine);
+    LineInternal(Y, ColLeft-MmToPrinterPxX(1) shr 1, ColRight+MmToPrinterPxX(1) shr 1, aDoDoubleLine);
 end;
 
 procedure TGDIPages.NewLine;
@@ -3744,18 +3853,19 @@ begin
     for i := 0 to n-1 do begin
       Page := CreateMetaFile(fPages[i].SizePx.X,fPages[i].SizePx.Y);
       try
+        // draw at first pagenumbers and after that the rendered page - because of correct savestate ('q'..'Q')
         fCanvas := CreateMetafileCanvas(Page);
-        fCanvas.Draw(0,0,GetMetaFileForPage(i)); // re-draw the original page
+        SavedState := fPagesToFooterState;
         s := format(fPagesToFooterText,[i+1,n]); // add 'Page #/#' caption
         aX := fPagesToFooterAt.X;
         if aX<0 then
           aX := fPages[i].SizePx.X-fPages[i].MarginPx.Right;
-        SavedState := fPagesToFooterState;
         if TextAlign=taRight then
           dec(aX,fCanvas.TextWidth(s));
         with fPages[i] do
           fCanvas.TextOut(aX,SizePx.Y-MarginPx.bottom-fFooterHeight+
             fFooterGap+fPagesToFooterAt.Y,s);
+        fCanvas.Draw(0,0,GetMetaFileForPage(i)); // re-draw the original page
         FreeAndNil(fCanvas);
         SetMetaFileForPage(i,Page); // replace page content
       finally
@@ -3985,6 +4095,116 @@ begin
   end;
 end;
 
+  procedure TGDIPages.AddStyle(aStyleName:RawUTF8);
+  begin
+     AddStyle(aStyleName,null);
+  end;
+
+  procedure TGDIPages.AddStyle(aStyleName:RawUTF8; aStyle:Variant);
+  var FontStyle,style : variant;
+
+  function getNameIndex(V:Variant;aName: RawUTF8 ) : integer;
+  begin
+     result := DocVariantData(v).GetValueIndex(aName)
+  end;
+  begin
+    if VarIsEmptyOrNull(fStyles) then
+       TDocVariant.New(fStyles,[dvoIsObject,dvoNameCaseSensitive, dvoCheckForDuplicatedNames]);
+    TDocVariant.New(style,[dvoIsObject, dvoCheckForDuplicatedNames]);
+    if not VarIsEmptyOrNull(aStyle) and (getNameIndex(aStyle,'Name') >=0 ) then
+      DocVariantData(Style).AddValue('Name',DocVariantData(aStyle).GetValueOrEmpty('Name'))
+    else
+      DocVariantData(Style).AddValue('Name',Font.Name);
+
+    if not VarIsEmptyOrNull(aStyle) and (getNameIndex(aStyle,'Size') >=0)  then
+      DocVariantData(Style).AddValue('Size',DocVariantData(aStyle).GetValueOrEmpty('Size'))
+    else
+      DocVariantData(Style).AddValue('Size',Font.Size);
+
+    if not VarIsEmptyOrNull(aStyle) and (getNameIndex(aStyle,'Color') >=0)  then
+      DocVariantData(Style).AddValue('Color',DocVariantData(aStyle).GetValueOrEmpty('Color'))
+    else
+      DocVariantData(Style).AddValue('Color',Font.Color);
+
+    if not VarIsEmptyOrNull(aStyle) and (getNameIndex(aStyle,'TextAlign') >=0)  then
+      DocVariantData(Style).AddValue('TextAlign',DocVariantData(aStyle).GetValueOrEmpty('TextAlign'))
+    else
+      DocVariantData(Style).AddValue('TextAlign',TextAlign);
+
+    if not VarIsEmptyOrNull(aStyle) and (getNameIndex(aStyle,'ColTextAlign') >=0)  then
+      DocVariantData(Style).AddValue('ColTextAlign',DocVariantData(aStyle).GetValueOrEmpty('ColTextAlign')) ;
+
+    if not VarIsEmptyOrNull(aStyle) and (getNameIndex(aStyle,'VerticalAlign') >=0)  then
+      DocVariantData(Style).AddValue('VerticalAlign',DocVariantData(aStyle).GetValueOrEmpty('VerticalAlign'))
+    else
+      DocVariantData(Style).AddValue('VerticalAlign',VerticalTextAlign);
+
+    if not VarIsEmptyOrNull(aStyle) and (getNameIndex(aStyle,'FontStyle') >=0)  then
+      DocVariantData(Style).AddValue('FontStyle',_Json(DocVariantData(aStyle).Value[ getNameIndex(aStyle,'FontStyle')]._JSON))
+    else begin
+       TDocVariant.New(FontStyle,[dvoIsArray]);
+       if fsBold in Font.Style then
+         DocVariantData(Fontstyle).additem(fsBold);
+       if fsItalic in Font.Style then
+         DocVariantData(Fontstyle).additem(fsItalic);
+       if fsUnderLine in Font.Style then
+         DocVariantData(Fontstyle).additem(fsUnderLine);
+       if fsStrikeOut in Font.Style then
+         DocVariantData(Fontstyle).additem(fsStrikeOut);
+
+
+      DocVariantData(Style).AddValue('FontStyle',_Json(Fontstyle)._JSON) ;
+    end;
+
+    DocVariantData(fStyles).addValue(aStyleName,_Json(Style._JSON));
+  end;
+
+  procedure TGDIPages.clearStyles;
+  begin
+     TDocVariant.New(fStyles,[dvoIsObject,dvoNameCaseSensitive, dvoCheckForDuplicatedNames]);
+  end;
+
+  function TGDIPages.getStyleIdx(aName:RawUTF8):integer;
+  begin
+     Result := DocVariantData(fStyles).GetValueIndex(aName)
+  end;
+
+  procedure TGDIPages.setStyle(aName:RawUTF8);
+  begin
+    if getStyleIdx(aName) >-1 then
+      setStyle( DocVariantData(fStyles).GetValueIndex(aName));
+  end;
+
+  procedure TGDIPages.setStyle(aIdx:integer);
+  var lStyle: variant;
+      i,j : integer;
+  function getFontStyle( p: integer):TFontStyle;
+  begin
+    case p of
+      0 : result := fsBold;
+      1 : result := fsItalic;
+      2 : result := fsUnderline;
+      3 : result := fsStrikeout;
+    end;
+  end;
+  begin
+     if aIdx <0 then exit;
+
+     lStyle :=  DocVariantData(fStyles).Value[ aIdx];
+     Font.Name := lStyle.Name;
+     Font.size := lStyle.Size;
+     Font.color  := TColor(lStyle.Color);
+     textalign  := TTextalign(lStyle.TextAlign);
+     VerticalTextAlign:= TVerticalTextAlign(lStyle.VerticalAlign);
+     Font.style  := [];
+     with TDocVariantData(DocVariantData(lStyle).A[ 'FontStyle']^) do
+     begin
+       for j := 0 to  count -1 do
+         Font.style  := Font.style + [getfontstyle(value[j])] ;
+     end;
+  end;
+
+
 procedure TGDIPages.AddLineToHeader(doubleline: boolean);
 begin
   if Self=nil then exit; // avoid GPF
@@ -4001,10 +4221,15 @@ begin
 end;
 
 
-procedure TGDIPages.AddTextToHeader(const s: SynUnicode);
+procedure TGDIPages.AddTextToHeader(const s: SynUnicode; aLineSpacing:TLineSpacing);
+var lHeader:THeaderFooter;
 begin
   if Self<>nil then
-    fHeaderLines.Add(THeaderFooter.Create(Self,false,s,true));
+  begin
+    lHeader := THeaderFooter.Create(Self,false,s,true);
+    lHeader.LineSpacing := aLineSpacing;
+    fHeaderLines.Add(lHeader);
+  end;
 end;
 
 procedure TGDIPages.AddTextToHeaderAt(const s: SynUnicode; XPos: integer);
@@ -4016,13 +4241,16 @@ begin
   fHeaderLines.Add(Head);
 end;
 
-procedure TGDIPages.AddTextToFooter(const s: SynUnicode);
+procedure TGDIPages.AddTextToFooter(const s: SynUnicode; aLineSpacing:TLineSpacing);
+var lFooter:THeaderFooter;
 begin
   if Self=nil then exit; // avoid GPF
   if fFooterLines.Count = 0 then
     CalcFooterGap;
-  fFooterLines.Add(THeaderFooter.Create(Self,false,s,true));
-  inc(fFooterHeight, GetLineHeight);
+  lFooter :=THeaderFooter.Create(Self,false,s,true);
+  lFooter.LineSpacing := aLineSpacing;
+  fFooterLines.Add(lFooter);
+  inc(fFooterHeight, trunc(GetLineHeight));
 end;
 
 procedure TGDIPages.AddTextToFooterAt(const s: SynUnicode; XPos: integer);
@@ -4070,6 +4298,8 @@ begin
     result.ColRight := PrinterPxToMmX(ColRight);
     result.ColAlign := ColAlign;
     result.ColBold := ColBold;
+    result.ColStyle := ColStyle;
+
   end;
 end;
 
@@ -4089,7 +4319,7 @@ begin
     fColumns[index].ColBold := true;
 end;
 
-procedure TGDIPages.AddColumn(left, right: integer; align: TColAlign; bold: boolean);
+procedure TGDIPages.AddColumn(left, right: integer; align: TColAlign; bold: boolean;style : integer);
 var n: integer;
 begin
   if Self=nil then exit; // avoid GPF
@@ -4104,10 +4334,11 @@ begin
     ColRight := right;
     ColAlign := align;
     ColBold := bold;
+    colStyle := style;
   end;
 end;
 
-procedure TGDIPages.AddColumns(const PercentWidth: array of integer; align: TColAlign);
+procedure TGDIPages.AddColumns(const PercentWidth: array of integer; align: TColAlign; style:integer);
 var i, sum, left, right, ww, n: integer;
 begin
   if Self=nil then exit; // avoid GPF
@@ -4131,6 +4362,7 @@ begin
         ColAlign := caCenter  else
         ColAlign := align;
       ColBold := false;
+      ColStyle:= style;
     end;
     left := right;
   end;
@@ -4138,18 +4370,24 @@ end;
 
 procedure TGDIPages.AddColumnHeaders(const headers: array of SynUnicode;
   WithBottomGrayLine: boolean=false; BoldFont: boolean=false;
-  RowLineHeight: integer=0; flags: integer=0);
+  RowLineHeight: integer=0; flags: integer=0;style: integer = -1);
 var n,i: integer;
 begin
   if Self=nil then exit; // avoid GPF
-  if flags=0 then begin
-    if BoldFont then
-      Font.Style := [fsBold];
-    flags := TextFormatsToFlags;
-  end;
+  if style > -1 then
+  begin
+    if flags=0 then begin
+      if BoldFont then
+        Font.Style := [fsBold];
+      flags := TextFormatsToFlags;
+    end;
+  end
+  else
+    flags := 0;
   n := length(fColumnHeaderList);
   SetLength(fColumnHeaderList,n+1);
   fColumnHeaderList[n].flags := flags;
+  fColumnHeaderList[n].style := style;
   SetLength(fColumnHeaderList[n].headers,Length(headers));
   for i := 0 to high(headers) do
     fColumnHeaderList[n].headers[i] := headers[i];
@@ -4160,6 +4398,8 @@ begin
   if BoldFont then
     Font.Style := [];
 end;
+
+
 
 function CSVToArray(var CSV: PWideChar; n: integer): TSynUnicodeDynArray;
 var i: integer;
@@ -4192,6 +4432,34 @@ begin
     result := clWhite else
     result := clBlack;
 end;
+
+function TGDIPages.GetCurTextMetrics:TTextMetric;
+var DC: HDC;
+begin
+  if not Assigned(fCanvas) then begin
+    // if no current fCanvas: use the Screen resolution (very fast)
+    DC := GetDC(0);
+    GetTextMetrics(DC,Result);
+    ReleaseDC(0,DC);
+  end else
+    GetTextMetrics(fCanvas.Handle,result);
+end;
+
+function TGDIPages.getVerticalAlign(aColVAlign:TVerticalTextAlign; aTM:TTextMetric): integer;
+var tm: TTextMetric;
+begin
+  if Self=nil then begin
+    result := 0;
+    exit;
+  end;
+  tm := GetCurTextMetrics;
+  case aColVAlign of
+   tvaTop:  result := 0;
+   tvaMiddle: result := ((aTM.tmHeight - tm.tmHeight)*9 shr 3) shr 1;
+   tvaBottom: result := ((aTM.tmHeight - tm.tmHeight)*9 shr 3) ;
+   tvaBaseLine:result := ((aTM.tmAscent - tm.tmAscent)*9 shr 3) ;
+  end;
+ end;
 
 procedure TGDIPages.DrawTextAcrossCols(const StringArray: array of SynUnicode;
   BackgroundColor: TColor);
@@ -4249,7 +4517,7 @@ end;
 
 var RowRect: TRect;
     lh: integer;
-    max, i, j, k, c, H, ParenthW, LinesCount, X: integer;
+    lmax, i, j, k, c, H, ParenthW, LinesCount, X,lHY: integer;
     s: SynUnicode;
     line: string;
     Lines: TSynUnicodeDynArray;
@@ -4257,28 +4525,48 @@ var RowRect: TRect;
     PWLen, Options: integer;
     size: TSize;
     r: TRect;
+    TM: TTextMetric;
+    lColAlign : TColAlign;
 begin
   if Self=nil then exit; // avoid GPF
-  max := high(fColumns);
-  if (max<0) or (length(StringArray)=0) then
+  lmax := high(fColumns);
+  if (lmax<0) or (length(StringArray)=0) then
     exit; // no column defined
-  if High(StringArray)<max then
-    max := High(StringArray);
-  if max<0 then
+  if High(StringArray)<lmax then
+    lmax := High(StringArray);
+  if lmax<0 then
     exit; // nothing to draw
   // check enough place for this column content on the page
-  lh := GetLineHeight;
+  lh := 0;
+  // get the highest text and its metrics (due the possible different column text styles )
+  for j := 0 to lmax do
+    with fColumns[j] do
+    begin
+       if colStyle>-1 then
+         setStyle( colStyle);
+       h := GetLineHeight;
+       if h > lh  then
+       begin
+         lh := h;
+         tm := GetCurTextMetrics;
+       end;
+    end;
+
   CheckYPos;
   LinesCount := 1; // by default, one line of text will be written
   if WordWrapLeftCols then begin // check if stay on current page after word wrap
-    for j := 0 to max do
+    // allow wrapping of column headers no matter what ColAlign
+    for j := 0 to lmax do
     with fColumns[j] do
-    if (ColAlign=caLeft) and (ColRight>ColLeft) and
+    if ((ColAlign=caLeft) or fDrawTextAcrossColsDrawingHeader) and (ColRight>ColLeft) and
        (HasCRLF(StringArray[j]) or
         (TextWidthC(fCanvas,StringArray[j])>ColRight-ColLeft)) then begin
-      k := WrapText(StringArray[j],ColRight-ColLeft,nil); // calculate line counts
-      if k>LinesCount then
-        LinesCount := k; // calculate maximum line count
+       if colStyle>-1 then
+         setStyle( colStyle);
+
+       k := WrapText(StringArray[j],ColRight-ColLeft,nil); // calculate line counts
+       if k>LinesCount then
+         LinesCount := k; // calculate maximum line count
     end;
     if (LinesCount>1) and not HasSpaceForLines(LinesCount) then begin
       NewPageInternal;
@@ -4297,7 +4585,7 @@ begin
   ParenthW := fCanvas.TextWidth(')');
   RowRect.Top := fCurrentYPos;
   RowRect.Bottom := RowRect.Top+lh*LinesCount;
-  RowRect.Right := fColumns[max].ColRight;
+  RowRect.Right := fColumns[lmax].ColRight;
   if BackgroundColor<>clNone then
   with fCanvas do begin
     Brush.Style := bsSolid;
@@ -4309,22 +4597,34 @@ begin
   end;
   // main loop, used to write column content
   line := '';
-  for i := 0 to max do begin
+  for i := 0 to lmax do begin
     s := StringArray[i];
     line := line+SynUnicodeToString(s)+#9; // add column content + tab for report text
     if s<>'' then
     with fColumns[i], fCanvas do
     if ColRight>ColLeft then begin
-      if ColBold then
-        Font.Style := Font.Style+[fsBold];
+      if (colStyle <> -1)  then
+        setStyle( colStyle);
+      if BackgroundColor<>clNone then
+        Font.Color := clAlways(BackgroundColor);
+
       Options := ETO_CLIPPED or TextFlags; // unicode version of TextRect()
       if Brush.Style <> bsClear then
         Options := Options or ETO_OPAQUE;
       InternalUnicodeString(s,PW,PWLen,@size);
+      lColAlign := ColAlign;
+      if fDrawTextAcrossColsDrawingHeader and WordWrapLeftCols then
+      begin
+        // only for lColAlign=caLeft is processed word wrapping
+        if (ColRight>ColLeft) and (HasCRLF(s) or (size.cx>ColRight-ColLeft))  then
+          lColAlign := caLeft;
+      end;
+      lHY := fCurrentYPos + getVerticalAlign(VerticalTextAlign, tm);
+      RowRect.Top := fCurrentYPos;
       if (ColAlign=caCenter) and (size.cx>ColRight-ColLeft) then
         // overlapping centered -> draw right aligned
         RowRect.Left := ColRight-size.cx-ParenthW else
-      case ColAlign of
+      case lColAlign of
         caLeft: begin
           RowRect.Left := ColLeft;
           if WordWrapLeftCols and (ColRight>ColLeft) and
@@ -4334,19 +4634,23 @@ begin
             dec(RowRect.Left,ParenthW);
             for j := 0 to high(Lines) do begin
               InternalUnicodeString(Lines[j],PW,PWLen,@size);
-              if BiDiMode=bdRightToLeft then
+              // enable word wrapping also for colHeaders with ColAlign <> caLeft
+              if (BiDiMode=bdRightToLeft) or (colAlign = caRight) then
                 X := ColRight-size.cx-ParenthW else
+              if colAlign = caCenter then
+                X :=  ColLeft+(ColRight-ColLeft-size.cx)shr 1
+              else
                 X := ColLeft;
               RowRect.Top := fCurrentYPos+lh*j;
               ExtTextOutW(Handle,X,RowRect.Top,Options,@RowRect,PW,PWLen,nil);
             end;
             RowRect.Top := fCurrentYPos;
-            if ColBold then
+            if ColBold  and (colstyle = -1) then
               Font.Style := Font.Style-[fsBold];
             Continue; // text was written as word-wrap -> write next column
           end else
-          if BiDiMode=bdRightToleft then
-            RowRect.Left := ColRight-size.cx-ParenthW;
+            if BiDiMode=bdRightToleft then
+              RowRect.Left := ColRight-size.cx-ParenthW;
         end;
         caCenter:
           RowRect.Left := ColLeft+(ColRight-ColLeft-size.cx)shr 1;
@@ -4361,16 +4665,22 @@ begin
         end;
       end;
       dec(RowRect.Left,ParenthW);
-      ExtTextOutW(Handle,RowRect.Left+ParenthW,fCurrentYPos,Options,@RowRect,PW,PWLen,nil);
+      if WordWrapLeftCols and  fDrawTextAcrossColsDrawingHeader then
+      begin
+        RowRect.Top := RowRect.Bottom -lh;
+        lHY := RowRect.Top;
+      end;
+      // lHY - y position that takes into account Vertical align
+      ExtTextOutW(Handle,RowRect.Left+ParenthW,lHY,Options,@RowRect,PW,PWLen,nil);
       if (i<length(LinkArray)) and (LinkArray[i]<>'') then begin
         r.Left := PrinterPxToMmX(rowrect.Left);
         r.Top := PrinterPxToMmX(rowrect.Top);
-        r.right := PrinterPxToMmX(rowrect.left+(rowrect.right-fColumns[0].ColLeft) div (max+1));
+        r.right := PrinterPxToMmX(rowrect.left+(rowrect.right-fColumns[0].ColLeft) div (lmax+1));
         r.Bottom := PrinterPxToMmX(rowrect.Bottom);
         AddLink(LinkArray[i],r);
       end;
       inc(RowRect.Left,size.cx+ParenthW);
-      if ColBold then
+      if ColBold and (colStyle=-1) then
         Font.Style := Font.Style-[fsBold];
     end;
   end;
@@ -4753,7 +5063,7 @@ function TGDIPages.ExportPDFStream(aDest: TStream): boolean;
 var PDF: TPDFDocument;
     BackgroundImage: TPdfImage;
     page: TPdfPage;
-    i: integer;
+    i,j: integer;
 begin
   try
     PDF := TPDFDocument.Create(UseOutlines,0,ExportPDFA1,
@@ -4795,6 +5105,11 @@ begin
           PDF.Canvas.DrawXObject(0,0,page.PageWidth,page.PageHeight,'BackgroundImage');
         PDF.Canvas.RenderMetaFile(GetMetaFileForPage(i),
           Screen.PixelsPerInch/fPrinterPxPerInch.x,Screen.PixelsPerInch/fPrinterPxPerInch.y);
+        // render page and after that add rendering external metafiles
+        if assigned(onRenderMetafile) then
+          for j := 0 to high(metafiles) do
+             onRenderMetafile(Self, Metafiles[j],PDF.Canvas);
+
         PDF.SaveToStreamDirectPageFlush;
       end;
       PDF.SaveToStreamDirectEnd;
@@ -5063,6 +5378,7 @@ constructor THeaderFooter.Create(Report: TGDIPages; doubleline: boolean;
   const aText: SynUnicode=''; IsText: boolean=false);
 begin
   Text := aText;
+  lineSpacing := lsSingle;
   State := Report.SavedState;
   if not IsText then
     if doubleline then
@@ -5581,4 +5897,3 @@ end;
 {$endif RENDERPAGES}
 
 end.
-
