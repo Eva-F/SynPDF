@@ -209,6 +209,7 @@ unit mORMotReport;
     may be able to append some text without creating a new paragraph - from a
     proposal patch by Mike Lamusse (mogulza): thanks for sharing!
   - added TGDIPages.DrawColumnLine method - thanks kevinday for the patch
+
 *)
 
 interface
@@ -466,6 +467,7 @@ type
     fZoom: integer;
     fZoomStatus: TZoomStatus;
     fNegsToParenthesesInCurrCols: boolean;
+    fWordWrapColsHeader: boolean;
     fWordWrapLeftCols: boolean;
     fUseOutlines: boolean;
     fForceScreenResolution: boolean;
@@ -1167,6 +1169,7 @@ type
     // individual lines
     // - this is disabled by default
     property WordWrapLeftCols: boolean read fWordWrapLeftCols write fWordWrapLeftCols;
+    property WordWrapColsHeader: boolean read fWordWrapColsHeader write fWordWrapColsHeader;
     /// if set, any DrawTitle() call will create an Outline entry
     // - used e.g. for PDF generation
     // - this is enabled by default
@@ -2506,7 +2509,7 @@ begin
   SavedAlign := fAlign;
   SavedWordWrapLeftCols := WordWrapLeftCols;
  // wordwrap is allowed also for column headers
- // WordWrapLeftCols := false;
+  WordWrapLeftCols := WordWrapColsHeader;
 
   if Assigned(fStartColumnHeader) then
     fStartColumnHeader(Self);
