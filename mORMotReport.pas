@@ -4560,15 +4560,17 @@ begin
     // allow wrapping of column headers no matter what ColAlign
     for j := 0 to lmax do
     with fColumns[j] do
-    if ((ColAlign=caLeft) or fDrawTextAcrossColsDrawingHeader) and (ColRight>ColLeft) and
-       (HasCRLF(StringArray[j]) or
-        (TextWidthC(fCanvas,StringArray[j])>ColRight-ColLeft)) then begin
-       if colStyle>-1 then
-         setStyle( colStyle);
+    begin
+      if colStyle>-1 then
+        setStyle( colStyle);
+      if ((ColAlign=caLeft) or fDrawTextAcrossColsDrawingHeader) and (ColRight>ColLeft) and
+         (HasCRLF(StringArray[j]) or
+          (TextWidthC(fCanvas,StringArray[j])>ColRight-ColLeft)) then begin
 
-       k := WrapText(StringArray[j],ColRight-ColLeft,nil); // calculate line counts
-       if k>LinesCount then
-         LinesCount := k; // calculate maximum line count
+         k := WrapText(StringArray[j],ColRight-ColLeft,nil); // calculate line counts
+         if k>LinesCount then
+           LinesCount := k; // calculate maximum line count
+      end;
     end;
     if (LinesCount>1) and not HasSpaceForLines(LinesCount) then begin
       NewPageInternal;
