@@ -209,7 +209,6 @@ unit mORMotReport;
     may be able to append some text without creating a new paragraph - from a
     proposal patch by Mike Lamusse (mogulza): thanks for sharing!
   - added TGDIPages.DrawColumnLine method - thanks kevinday for the patch
-
 *)
 
 interface
