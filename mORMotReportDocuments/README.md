@@ -10,15 +10,18 @@
 
 4. [added drawing of RoundRectangle](#4-added-drawing-of-roundrectangle)
 
-5. [enhanced Columns work](#5-enhanced-columns-drawing)  
+5. [enhanced Columns work](#5-enhanced-columns-work)  
 *each column / column header can has own text style; it is possible to set word wrap for column header*
 
-6. [render external Metafiles directly into PDF](#6-render-external-Metafiles-directly-into-pdf)  
+6. [render external Metafiles directly into PDF](#6-render-external-metafiles-directly-into-pdf)  
 *it is not neccessary to render external metafiles twice - once into GDIPages.canvas and second time into Pdf.canvas*
 
-
-
-### 1.added Vertical align
+[Images](#sample-images)
+  
+    
+      
+      
+### 1. added Vertical align
 
 **TVerticalTextAlign** = (tvaTop,tvaMiddle,tvaBottom,tvaBaseLine);
 
@@ -109,4 +112,18 @@ usefull for tables, label - value styles or unordered/ordered list
 
 sample in the RenderExternalMetafile.pas  
 the option of drawing image as Portrait or Landscape orientation  
+
+
+### Sample images
+
+![Styles](https://user-images.githubusercontent.com/3242659/55557113-685ffa80-56e9-11e9-8568-8c077f3494d7.png)  
+
+![tables](https://user-images.githubusercontent.com/3242659/55557111-685ffa80-56e9-11e9-9d86-1b2defa7f696.png)  
+
+![lblValue](https://user-images.githubusercontent.com/3242659/55557116-68f89100-56e9-11e9-933f-0a64db765db3.png)  
+
+![UoList](https://user-images.githubusercontent.com/3242659/55557115-68f89100-56e9-11e9-9f1f-67039232e0e3.png)  
+
+![Metafile](https://user-images.githubusercontent.com/3242659/55557114-685ffa80-56e9-11e9-8a8d-aa9a9a1d2eea.png)  
+
 
