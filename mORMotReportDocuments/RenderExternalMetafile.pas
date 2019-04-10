@@ -80,7 +80,7 @@ begin
       begin
         lMetafile.LoadFromStream(lS);
         lR := getBoundRect( lMetafile.handle);
-        lScPx := PDFdpi  / (fPrinterPxPerInch.x) ;
+        lScPx :=  screen.pixelsperinch  / (fPrinterPxPerInch.x) ;
         // my Flag for rotate image        
         lRotate :=  StartsText('90_',aMetaFileExt.MetafileName);
         // or f.e.  
@@ -95,12 +95,15 @@ begin
                               (aMetaFileExt.Bound.Bottom- aMetaFileExt.Bound.Top)   / (lR.Bottom-lR.Top))*lscPx;
         lX :=PDFdpi * (aMetaFileExt.Bound.Left) / fPrinterPxPerInch.x;
         lY :=PDFdpi * (aMetaFileExt.Bound.Top) / fPrinterPxPerInch.y ;
-        if lRotate then  (landscape - about -90 deg)
+        if lRotate then // (landscape - about -90 deg)
         begin
           aCanvas.GSave;
-          aCanvas.ConcatToCTM(cos(-PI/2),sin(-PI/2),-sin(-PI/2),cos(-PI/2), 
-                              lx - (PDFdpi*TMyGDIPages(Sender).fPhysicalSizePx.y/TMyGDIPages(Sender).fPrinterPxPerInch.x - lScale*(lR.Bottom-lR.Top)),
-                              PDFdpi*(TMyGDIPages(Sender).fPhysicalSizePx.y )/TMyGDIPages(Sender).fPrinterPxPerInch.x - lY, 6);                            
+          aCanvas.ConcatToCTM(1, 0, 0, 1, lx, PDFdpi*(fPhysicalSizePx.y )/fPrinterPxPerInch.x - lY, 3);
+          aCanvas.ConcatToCTM(cos(-PI/2),sin(-PI/2),-sin(-PI/2),cos(-PI/2),
+                  -( round(PDFdpi*(fPhysicalSizePx.y )/fPrinterPxPerInch.x)-
+                    PDFdpi/screen.pixelsperinch * lScale*(lR.Bottom-1)), 0, 3);
+                    // =I2Y(lR.Bottom-1);
+                    
           aCanvas.RenderMetaFile(lMetaFile,lScale,lScale);
           aCanvas.GRestore;
         end
