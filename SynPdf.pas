@@ -5229,6 +5229,9 @@ var Buffer: ShortString;
 begin
   if BEnd-B<=32 then
     Save;
+  // to avoid the Exponent display
+  if nearZero(Value,max(6,Decimals)) then 
+    Value := 0;
   str(Value:0:Decimals,Buffer);
   L := ord(Buffer[0])+1;
   Buffer[L] := ' '; // append space at the end
@@ -7101,7 +7104,14 @@ begin
 end;
 
 procedure TPdfDocument.addTextureBMPs(pID:word;pMS:THeapMemoryStream);
+var i : integer;
 begin
+for i := 0 to High(fTextureBMPs) do
+  begin
+    if pID=fTextureBMPs[i].textureID  then
+      exit;  //already exists
+
+  end;
   setLength(fTextureBMPs,Length(fTextureBMPs)+1);
   with fTextureBMPs[high(fTextureBMPs)] do
   begin
@@ -12416,4 +12426,3 @@ finalization
   if (FontSub<>0) and (FontSub<>INVALID_HANDLE_VALUE) then
     FreeLibrary(FontSub);
 end.
-
