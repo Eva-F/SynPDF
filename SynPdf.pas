@@ -10754,7 +10754,11 @@ begin
 
     // draw the bitmap on the PDF canvas
     with Canvas do begin
-      R := Rect(xd, yd, wd+xd, hd+yd);
+      if canvas.useTexture then
+        // boxI (resp. RectI ) takes Width-1 / Height-1
+        R := Rect(xd, yd, wd+xd+1, hd+yd+1)
+      else
+        R := Rect(xd, yd, wd+xd, hd+yd);
       NormalizeRect(R);
       Box := BoxI(R,true);
       ClipRc := GetClipRect;
