@@ -1,6 +1,12 @@
 ## the changes in SynPDF
 
+1. [handle EMR_SelectClipPath record](#1handle-emr_selectclippath-record)
 
+2. [add decimals accurency into TPdfReal](#2add-decimals-accurency-into-tpdfreal)
+
+3. [adding posibility to draw Texture/Pattern from Metafile](#3adding-posibility-to-draw-texturepattern-from-metafile)
+
+4. [added an option of opacity (both for filling shape and for pattern/textures)](#4added-an-option-of-opacity-both-for-filling-shape-and-for-patterntextures)
 
 #### 1.handle EMR_SelectClipPath record
 
@@ -31,3 +37,21 @@ using pattern/texture in pdf is convenient from several reason
 
 comparission of pdf with pattern/texture objects and without them
 ![comparissionUsepattern](https://user-images.githubusercontent.com/3242659/54348958-87b7ba80-464a-11e9-93a0-7860e7f282ed.png)
+
+#### 4.added an option of opacity (both for filling shape and for pattern/textures)
+Opacity value can be set  in rendered metafile either as separate GDI comment   
+in the form :  
+  pgcOpacity(1byte)'SO'(2bytes) opacity value(single=4bytes)  
+or   
+  as a part of GDI comment for fill by pattern/texture  
+
+opacity value can be used in direct drawing into TPDFCanvas as well  
+>doc.canvas.opacity := 0.5;  
+>doc.canvas.useOpacity:= true;  
+>doc.canvas.rectangle(20,20,500,500);  
+>doc.canvas.fill;  
+
+![opacity](https://user-images.githubusercontent.com/3242659/56849597-d2d61600-68f6-11e9-8f11-152b8529aede.png)
+
+
+ 
