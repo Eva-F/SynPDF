@@ -678,6 +678,7 @@ type
 
 {$ifdef USE_BITMAP}
   TPdfPattern = class;
+  TPdfExtGState = class;
 {$endif USE_BITMAP}
 
 {$ifdef USE_PDFSECURITY}
@@ -1358,6 +1359,10 @@ type
     textureID : word;
     textureMS : THeapMemoryStream;
   end;
+  TExtGStateDetail=record
+    // it is possible to extend it to other commands
+    Opacity : single;
+  end;
 
   TTextureDetail=record
     textureID : word;
@@ -1368,6 +1373,7 @@ type
     TilesY    : word;
     XF        : XForm;
     angle     : single;    // after flipY
+    opacity   : single;    // 0 .. 1 
     quadrant  : integer ;  // to avoid unaccurancy for PI/2 multiplier
     originscaleX : single; // before flipY
     originscaleY : single; // before flipY
@@ -1413,6 +1419,7 @@ type
     // array of predefined pattern/texture bitmaps stored as Memory stream
     fTextureBMPs : array of TTextureBMP;
     fTextureList : array of TTextureDetail;
+    fExtGStateList : array of TPDFExtGState;
     FPatternList: TPdfArray;
     FDefaultPageWidth: cardinal;
     FDefaultPageHeight: Cardinal;
@@ -1543,15 +1550,20 @@ type
     // bitmap stored in TextureBMPs array into canvas.TextureBitmap
     procedure setTextureBMPs(pId:word);
     // returns index of Pattern/Texture from TextureList[] - if pattern(dimensionless)/ texture is missing it is created
-    function createOrGetTexture(aTextureID: word; aPatternType: TPdfPatternType; aTilesX,aTilesY: word; aWrapMode:TSynWrapMode; aScaleX,aScaleY,aAngle:single; aWidth:single=0; aHeight:single=0):word;
+    function createOrGetTexture(aTextureID: word; aPatternType: TPdfPatternType; aTilesX,aTilesY: word; aWrapMode:TSynWrapMode; aScaleX,aScaleY,aAngle,aOpacity:single; aWidth:single=0; aHeight:single=0):word;
     // returns index of Pattern/Texture from TextureList[] - if texture is missing it is created as copy of TTextureDetail
     function copyorGetTextureDetail(aTextureDetail:TTextureDetail; aPatternType: TPdfPatternType;aWidth,aHeight : single;aInheritFrom:pdfString): word;
     // unique name of Pattern/Texture  Pattern 'SynPat_' + TextureObjectID; Texture 'SynT_' + TextureObjectID where
     // TextureObjectID is index of Texture from a TextureList[]
     function getTextureDetailName(aTextureDetail:TTextureDetail; aPatternType: TPdfPatternType; aWidth,aHeight : single): PdfString;
     // returns index of Pattern/Texture from TextureList[]; if missing returns -1
-    function GetTextureDetailIdx(aTextureID: word; aPatternType: TPdfPatternType; aTilesX,aTilesY: word; aWrapMode:TSynWrapMode; aScaleX,aScaleY,aAngle:single; aWidth:single; aHeight:single; pTestOrigin:boolean=false):SmallInt;
+    function GetTextureDetailIdx(aTextureID: word; aPatternType: TPdfPatternType; aTilesX,aTilesY: word; aWrapMode:TSynWrapMode; aScaleX,aScaleY,aAngle,aOpacity:single; aWidth:single; aHeight:single; pTestOrigin:boolean=false):SmallInt;
     function getTextureDetail(pIdx: word):TTextureDetail;
+    // returns index of ExtGState ( for now based on different opacity) from fExtGStateList[]; if missing returns -1
+    function createOrGetExtGState(aOpacity: single):word;
+    // returns unique ExtGState name (GS_index) 
+    function getExtGStateName(aIdx:word): PdfString;
+
     /// register an pattern to the PDF document
     // - returns the internal index as added in FPatternList[]
     function RegisterPattern(AObject: TPdfPattern; const AName: PDFString): integer;
@@ -1911,6 +1923,9 @@ type
     fUseMetaFileTextClipping: TPdfCanvasRenderMetaFileTextClipping;
     fKerningHScaleBottom: Single;
     fKerningHScaleTop: Single;
+    // the option to fill shape with given opacity      
+    fOpacity : single;
+    fUseOpacity : boolean;
     // some cache
     FPreviousRasterFontName: RawUTF8;
     FPreviousRasterFontIndex: integer;
@@ -1943,6 +1958,9 @@ type
     function RectI(Rect: TRect; Normalize: boolean): TPdfRect;
     procedure DrawXObjectPrepare(const AXObjectName: PDFString);
     procedure DrawPatternPrepare(const APattern: PDFString);
+    // add used ExtGState into Page Resources    
+    procedure DrawExtGStatePrepare(const AExtGStateName: PDFString; aPdfExtGState:TPdfExtGState);
+
     // wrappers about offset calculation
     function ViewOffsetX(X: Single): Single;
     function ViewOffsetY(Y: Single): Single;
@@ -1953,6 +1971,9 @@ type
     // property getters
     function GetDoc: TPdfDocument;    {$ifdef HASINLINE}inline;{$endif}
     function GetPage: TPdfPage;       {$ifdef HASINLINE}inline;{$endif}
+    procedure setUseOpacity(const aValue : boolean);
+    // returns unique ExtGState name corresponding aOpacity 
+    function getOpacityAsExtGState(aOpacity:single):PdfString;
   public
     /// create the PDF canvas instance
     constructor Create(APdfDoc: TPdfDocument);
@@ -1972,6 +1993,8 @@ type
     // matrix, we added a custom decimal number parameter here
     procedure ConcatToCTM(a, b, c, d, e, f: Single; Decimals: Cardinal=6);overload; {  cm  }
     procedure ConcatToCTM(aXForm: XForm; Decimals: Cardinal=6);overload;
+    // ExtGState command /ExtGStateUniqueName gs    
+    procedure ExtGState(aGStateName :PdfString);
 
 
     /// Set the flatness tolerance in the graphics state
@@ -2336,6 +2359,8 @@ type
     property TextureWrapMode : TSynWrapMode read fTextureWrapMode write fTextureWrapMode;
     // useTexture=True means that  DrawBitmap procedure use TextureBitmap instead of B:TBitmap in its paramers
     property UseTexture : boolean read fUseTexture write fUseTexture;
+    property Opacity : single read fOpacity write fOpacity;
+    property UseOpacity : boolean read fUseOpacity write setUseOpacity;
 
  end;
 
@@ -2390,7 +2415,7 @@ type
 
   // to avoid #0
   TPdfGDIComment =
-    (pgcNone, pgcOutline, pgcBookmark, pgcLink, pgcLinkNoBorder,pgcTextureBMP, pgcTextureID,  pgcPatternID);
+    (pgcNone, pgcOutline, pgcBookmark, pgcLink, pgcLinkNoBorder,pgcTextureBMP, pgcTextureID,  pgcPatternID,  pgcOpacity);
 
   /// a dictionary wrapper class for the PDF document information fields
   // - all values use the generic VCL string type, and will be encoded
@@ -2933,6 +2958,22 @@ type
   end;
   {$endif USE_METAFILE}
 
+  TPdfExtGState = class(TPdfObject)
+  private
+    FPage: TPdfPage;
+    FOpacity : single;
+    FFilter: PDFString;
+    FAttributes : TPdfDictionary;
+    FWriter : TPdfWrite;
+    procedure InternalWriteTo(W: TPdfWrite); override;
+  public   
+    // - an optional DontAddToFXref should be false
+    constructor Create(aCanvas: TPdfCanvas; aExtGStateDetail:TExtGStateDetail; DontAddToFXref: boolean); reintroduce;
+    destructor Destroy; override;
+    property Opacity: single read fOpacity;
+  end;
+
+
    {$ifdef USE_BITMAP}
   
    TPdfPattern = class(TPdfXObject)
@@ -2980,7 +3021,7 @@ type
     FCanvas: TPdfCanvas;
   public
     /// create a form XObject with TPDFCanvas
-    constructor Create(aDoc: TPdfDocument; W, H: Integer); reintroduce;
+    constructor Create(aDoc: TPdfDocument; W, H: single); reintroduce;
     // exact tiling f.e. 5 x 3
     procedure FillByTexture(aDoc: TPdfDocument; aImageName: pdfString);
     // standard tiling
@@ -6456,6 +6497,8 @@ begin
     end;
     if fTextureList<>nil then
      Finalize(fTextureList);
+    if fExtGStateList<>nil then
+      Finalize(fExtGStateList);
 
     for i := FFontList.Count-1 downto 0 do
       TObject(FFontList.List[i]).Free;
@@ -6929,7 +6972,7 @@ begin
         Pattern := TPdfPattern.create(Canvas,result,True);
         lTextureName :=canvas.getTextureName;
         AddPattern(lTextureName,Pattern);
-        Texture := TPdfFormWithCanvas.create(Canvas.fDoc,ceil(lShape.Width), ceil(lShape.Height));
+        Texture := TPdfFormWithCanvas.create(Canvas.fDoc,lShape.Width,lShape.Height);
         Texture.FillByPattern(Canvas.Doc,lTextureName,lShape.Width, lShape.Height );
         canvas.TextureObjectID := Canvas.Doc.copyOrGetTextureDetail(canvas.Doc.getTextureDetail(canvas.TextureObjectID), pptTexture, lShape.Width,lShape.Height,canvas.getTextureName);
         lTextureName :=canvas.getTextureName;
@@ -6948,7 +6991,7 @@ begin
       lTextureName := Canvas.Doc.getTextureDetailName(canvas.Doc.getTextureDetail(canvas.TextureObjectID), pptTexture, lShape.Width,lShape.Height);
       if (lTextureName = '') or ( GetPatternImageName(lTextureName,Canvas)='') then  // add texture based on pattern
       begin
-        Texture := TPdfFormWithCanvas.create(Canvas.fDoc,ceil(lShape.Width), ceil(lShape.Height));
+        Texture := TPdfFormWithCanvas.create(Canvas.fDoc,lShape.Width, lShape.Height);
         Texture.FillByPattern(Canvas.fDoc,canvas.getTextureName,lShape.Width, lShape.Height );
         canvas.TextureObjectID := Canvas.Doc.copyOrGetTextureDetail(canvas.Doc.getTextureDetail(canvas.TextureObjectID), pptTexture, lShape.Width,lShape.Height,canvas.getTextureName);
         lTextureName :=canvas.getTextureName;
@@ -7143,7 +7186,7 @@ begin
 
 end;
 
-function TPdfDocument.GetTextureDetailIdx(aTextureID: word; aPatternType: TPdfPatternType; aTilesX,aTilesY: word; aWrapMode:TSynWrapMode; aScaleX,aScaleY,aAngle:single; aWidth:single; aHeight:single; pTestOrigin:boolean):SmallInt;
+function TPdfDocument.GetTextureDetailIdx(aTextureID: word; aPatternType: TPdfPatternType; aTilesX,aTilesY: word; aWrapMode:TSynWrapMode; aScaleX,aScaleY,aAngle,aOpacity:single; aWidth:single; aHeight:single; pTestOrigin:boolean):SmallInt;
 var i : SmallInt;
 begin
   result := -1;
@@ -7157,6 +7200,7 @@ begin
                          (nearZero(aScaleY - fTextureList[i].OriginScaleY))) or
        (not pTestOrigin and (nearZero(aScaleX - fTextureList[i].ScaleX)) and
                          (nearZero(aScaleY - fTextureList[i].ScaleY)))) and
+       (nearZero(aOpacity - fTextureList[i].Opacity)) and
        (nearZero(aAngle - fTextureList[i].Angle)) and
        (nearZero(aWidth -fTextureList[i].Width,1)) and
        (nearZero(aHeight -fTextureList[i].Height,1)) then
@@ -7167,12 +7211,41 @@ begin
 
 end;
 
-function TPdfDocument.createOrGetTexture(aTextureID: word; aPatternType: TPdfPatternType; aTilesX,aTilesY: word; aWrapMode:TSynWrapMode; aScaleX,aScaleY,aAngle:single; aWidth:single; aHeight:single):word;
+function TPdfDocument.createOrGetExtGState(aOpacity: single):word;
+var i,idx : SmallInt;
+    lExtGStateDetail :TExtGStateDetail;
+    lPdfExtGState :TPdfExtGState;
+    lName : PDFString;
+    lResources,lResourcesExtGState : TPdfDictionary;
+begin
+  if High(fExtGStateList)<0 then
+  begin
+    setLength(fExtGStateList,Length(fExtGStateList)+1);
+    lExtGStateDetail.Opacity := 1;
+    lPdfExtGState := TPdfExtGState.create(canvas,lExtGStateDetail,false);
+    fExtGStateList[high(fExtGStateList)] := lPdfExtGState;
+    Canvas.DrawExtGStatePrepare(getExtGStateName(high(fExtGStateList)),lPdfExtGState); // register opacity=1
+  end;
+
+  for i := 0 to High(fExtGStateList) do
+    if (nearZero(aOpacity - fExtGStateList[i].Opacity)) then
+       begin
+         result :=word(i);
+         exit;
+       end;
+  setLength(fExtGStateList,Length(fExtGStateList)+1);
+  lExtGStateDetail.Opacity := aOpacity;
+  lPdfExtGState := TPdfExtGState.create(canvas,lExtGStateDetail,false);
+  fExtGStateList[high(fExtGStateList)] := lPdfExtGState;
+  result :=high(fExtGStateList);
+end;
+
+function TPdfDocument.createOrGetTexture(aTextureID: word; aPatternType: TPdfPatternType; aTilesX,aTilesY: word; aWrapMode:TSynWrapMode; aScaleX,aScaleY,aAngle,aOpacity:single; aWidth:single; aHeight:single):word;
 var i : SmallInt;
     lAngle : single;
 begin
   lAngle := aAngle * PI/180;
-  i := GetTextureDetailIdx(aTextureID, aPatternType, aTilesX, aTilesY, aWrapMode, aScaleX, aScaleY, -lAngle, aWidth, aHeight, true);
+  i := GetTextureDetailIdx(aTextureID, aPatternType, aTilesX, aTilesY, aWrapMode, aScaleX, aScaleY, -lAngle, aOpacity, aWidth, aHeight, true);
   if i>-1 then
   begin
     result := word(i);
@@ -7192,6 +7265,7 @@ begin
     InheritFrom:='';
     TilesY    := aTilesY;
     Quadrant  := trunc(-aAngle / 90 + 4 ) mod 4    ;
+    Opacity := aOpacity;
     Angle := -lAngle;       // Due flipY {0,0] is LeftBottom
     originScaleX := aScaleX;
     originScaleY := aScaleY;
@@ -7209,7 +7283,7 @@ function TPdfDocument.copyorGetTextureDetail(aTextureDetail:TTextureDetail; aPat
 var i: SmallInt;
 begin
   with  aTextureDetail do
-    i := GetTextureDetailIdx(TextureID, aPatternType, TilesX, TilesY, WrapMode, ScaleX, ScaleY, Angle,aWidth, aHeight);
+    i := GetTextureDetailIdx(TextureID, aPatternType, TilesX, TilesY, WrapMode, ScaleX, ScaleY, Angle,Opacity,aWidth, aHeight);
   if i > -1 then
   begin
     result := word(i);
@@ -7233,13 +7307,18 @@ begin
   result :=high(fTextureList);
 end;
 
+function TPdfDocument.getExtGStateName(aIdx:word): PdfString;
+begin
+  result := 'GS_'+inttostr(aidx);
+end;
+
 function TPdfDocument.getTextureDetailName(aTextureDetail:TTextureDetail; aPatternType: TPdfPatternType; aWidth,aHeight : single): PdfString;
 var i: SmallInt;
     w : word;
 begin
   result := '';
   with  aTextureDetail do
-    i := GetTextureDetailIdx(TextureID, aPatternType, TilesX, TilesY, WrapMode, ScaleX, ScaleY, Angle,aWidth,aHeight);
+    i := GetTextureDetailIdx(TextureID, aPatternType, TilesX, TilesY, WrapMode, ScaleX, ScaleY, Angle,Opacity,aWidth,aHeight);
   if i > -1 then
   begin
     w := i;
@@ -7711,6 +7790,24 @@ begin
   {$endif USE_METAFILE}
 end;
 
+procedure TPdfCanvas.DrawExtGStatePrepare(const AExtGStateName: PDFString; aPdfExtGState:TPdfExtGState);
+var
+    FPageResources: TPdfDictionary;
+    i: integer;
+begin
+  // drawing object must be registered. check object name
+  if aPdfExtGState=nil then
+    raise EPdfInvalidValue.CreateFmt('DrawExtGState: unknown %s', [AExtGStateName]);
+  FPageResources := FPage.GetResources('ExtGState');
+  if FPageResources=nil then
+  begin
+    FPageResources := TPdfDictionary.Create(Doc.FXref);
+    fPage.PdfDictionaryByName('Resources').AddItem('ExtGState',FPageResources);
+  end;
+  if FPageResources.ValueByName(AExtGStateName)=nil then
+    FPageResources.AddItem(AExtGStateName, aPdfExtGState);
+end;
+
 procedure TPdfCanvas.DrawPatternPrepare(const APattern: PDFString);
 var pattern: TPdfPattern;
     FPageResources: TPdfDictionary;
@@ -7764,21 +7861,37 @@ begin
   GRestore;
 end;
 
+function TPdfCanvas.getOpacityAsExtGState(aOpacity:single):PdfString;
+var
+    idx : integer;
+begin
+    idx := Doc.createOrGetExtGState(aOpacity);
+    result := Doc.getExtGStateName(idx);
+    Doc.Canvas.DrawExtGStatePrepare(result,Doc.fExtGStateList[idx]);
+end;
+
 procedure TPdfCanvas.DrawPattern(X, Y, AWidth, AHeight: Single;const AXObjectName: PDFString;
     const APatternName: PDFString);
 var lScale,ls,lc,lScaleX,lScaleY,ldx,ldy : single;
+    lTextureDetail : TTextureDetail;
+
 begin
   DrawXObjectPrepare(AXObjectName);
   if (patternType=pptPattern) and (doc.fTextureList[TextureObjectID].inheritFrom<>'') then
     DrawPatternPrepare(doc.fTextureList[TextureObjectID].inheritFrom);
   DrawXObjectPrepare(APatternName);
   GSave;
+  lTextureDetail := Doc.getTextureDetail(Doc.canvas.TextureObjectID);
+  // add ExtGState only for opacity <> 1
+  if not nearZero(1-lTextureDetail.Opacity)  then
+    extgstate(getOpacityAsExtGState(lTextureDetail.Opacity));
+
   lc := cos(doc.fTextureList[TextureObjectID].angle);
   ls := sin(doc.fTextureList[TextureObjectID].angle);
   if patternType=pptPattern then
   begin
     // use only rotation and shift vertex of BoundRect
-    ConcatToCTM(lc, ls, -ls, lc, X, Y);
+    ConcatToCTM(lc, ls, -ls, lc, X, Y,6);
     lScale := Max(I2X(TextureBitmap.Width)-FOffsetXDef,I2Y(TextureBitmap.Height)-(FPage.GetPageHeight -  FOffsetYDef));
     ExecuteXObject(APatternName);
   end
@@ -7787,10 +7900,13 @@ begin
     // an angle of rotation is considered only in (-PI/2,PI/2)
     lScale := Max(I2X(TextureBitmap.Width)-FOffsetXDef,I2Y(TextureBitmap.Height)-(FPage.GetPageHeight -  FOffsetYDef));
 //    lScale := I2X(Max(TextureBitmap.Width,TextureBitmap.Height));
-    ConcatToCTM(lScale, 0, 0, lScale,  X,  Y);
+    ConcatToCTM(lScale, 0, 0, lScale,  X,  Y,6);
     ExecuteXObject(APatternName);
   end;
   fill;
+  // return back to opacity = 1
+  if not nearZero(1-lTextureDetail.Opacity)  then
+    extgstate(getOpacityAsExtGState(1));
   GRestore;
 end;
 
@@ -7798,18 +7914,25 @@ procedure TPdfCanvas.DrawPatternEx(X, Y, AWidth, AHeight: Single;
       ClipX, ClipY, ClipWidth, ClipHeight: Single;const AXObjectName: PDFString; const APatternName: PDFString);
 var lScale : single;
     lP :TPointF;
-    ls,lc,lScaleX,lScaleY,ldx,ldy : single;
+    ls,lc,lScaleX,lScaleY,ldx,ldy : single;   
+    lTextureDetail : TTextureDetail;
 begin
   DrawXObjectPrepare(AXObjectName);
   if (patternType=pptPattern) and (doc.fTextureList[TextureObjectID].inheritFrom<>'') then
     DrawPatternPrepare(doc.fTextureList[TextureObjectID].inheritFrom);
   DrawXObjectPrepare(APatternName);
   GSave;
+
+  lTextureDetail := Doc.getTextureDetail(Doc.canvas.TextureObjectID);
+
+  if not nearZero(1-lTextureDetail.Opacity)  then
+      extgstate(getOpacityAsExtGState(lTextureDetail.Opacity));
+
 // own clip preceeds EMR_STRETCHDIBITS  ( if the shape isn't rectangle) in a metafile
 // therefore isn't useful to overwrite by the parent clip region
 // EMR_SaveDC->EMR_BeginPath->EMR_(poly)PolyGon(16)->EMR_EndPath->EMR_SelectClipPath->EMRStretchDIBits
 // if EMR_SetClipPath is missing, clip to bound
-  Rectangle(ClipX, ClipY, ClipWidth, ClipHeight);
+  Rectangle(ClipX, ClipY, ClipWidth, ClipHeight,6);
   Clip;
   NewPath;
 //  fNewPath := False;
@@ -7819,7 +7942,7 @@ begin
   if patternType=pptPattern then
   begin
     // use only rotation from TextureMatrix
-    ConcatToCTM(lc, ls, -ls, lc, X, Y);
+    ConcatToCTM(lc, ls, -ls, lc, X, Y,6);
     ExecuteXObject(APatternName);
   end
   else begin
@@ -7827,10 +7950,13 @@ begin
     lScale := Max(I2X(TextureBitmap.Width)-FOffsetXDef,I2Y(TextureBitmap.Height)-(FPage.GetPageHeight -  FOffsetYDef));
     // shift vertex of the boundary rect to the vertex of the rotated shape
     // an angle of rotation is expected in (-PI/2,PI/2)
-    ConcatToCTM(lScale, 0, 0, lScale,  X,  Y);
+    ConcatToCTM(lScale, 0, 0, lScale,  X,  Y, 6);
     ExecuteXObject(APatternName);
   end;
   fill;
+
+  if not nearZero(1-lTextureDetail.Opacity)  then
+      extgstate(getOpacityAsExtGState(1));
   GRestore;
 end;
 
@@ -7859,6 +7985,26 @@ begin
   concatToCTM(aXForm.em11, aXForm.em12, aXForm.em21, aXForm.em22, aXForm.edx, aXForm.edy,Decimals)
 end;
 
+procedure TPdfCanvas.ExtGState(aGStateName :PdfString);
+begin
+  if FContents<>nil then
+    FContents.Writer.Add('/'+aGStateName).Add(' gs'#10);
+end;
+
+procedure TPdfCanvas.setUseOpacity(const aValue : boolean);
+var idx : word;
+begin
+  if aValue then
+    idx := Doc.createOrGetExtGState(Opacity)
+  else
+    idx := Doc.createOrGetExtGState(1);
+
+
+  Doc.Canvas.DrawExtGStatePrepare(Doc.getExtGStateName(idx),Doc.fExtGStateList[idx]);
+  extgstate(Doc.getExtGStateName(idx));
+  fUseOpacity := aValue;
+
+end;
 
   {* General Graphics State *}
 
@@ -7975,37 +8121,66 @@ end;
 procedure TPdfCanvas.Fill;
 begin
   if FContents<>nil then
+  begin
       FContents.Writer.Add('f'#10);
+    // use opacity only for current fill
+    if useopacity then
+      useopacity := false;
+  end;
 end;
 
 procedure TPdfCanvas.Eofill;
 begin
   if FContents<>nil then
+  begin
       FContents.Writer.Add('f*'#10);
+      if useopacity then
+        useopacity := false;
+  end;
 end;
 
 procedure TPdfCanvas.FillStroke;
 begin
   if FContents<>nil then
+  begin
       FContents.Writer.Add('B'#10);
+      if useopacity then
+        useopacity := false;
+  end;
+
 end;
 
 procedure TPdfCanvas.ClosepathFillStroke;
 begin
   if FContents<>nil then
+  begin
       FContents.Writer.Add('b'#10);
+      if useopacity then
+        useopacity := false;
+  end;
+
 end;
 
 procedure TPdfCanvas.EofillStroke;
 begin
   if FContents<>nil then
+  begin
       FContents.Writer.Add('B*'#10);
+     if useopacity then
+       useopacity := false;
+  end;
+
 end;
 
 procedure TPdfCanvas.ClosepathEofillStroke;
 begin
   if FContents<>nil then
+  begin
     FContents.Writer.Add('b*'#10);
+    if useopacity then
+      useopacity := false;
+  end;
+
 end;
 
 procedure TPdfCanvas.Clip;
@@ -11016,7 +11191,7 @@ var Text: RawUTF8;
 // parse comment of TPdfGDIComment itself
 procedure HandleCommentInner(Kind: TPdfGDIComment; P: PAnsiChar; Len: integer);
 var wm,l,d, tn: word;
-    lScaleX,lScaleY,lAngle : single;
+    lScaleX,lScaleY,lAngle,lOpacity : single;
     lP: PAnsiChar;
     i : integer;
     lm : single;
@@ -11048,6 +11223,14 @@ begin
         Canvas.Doc.addTextureBMPs(l,lMS);
         lMS.free;
       end;
+       // there is possible to specify opacity as separate comment - then the opacity will use for next fill command
+      pgcOpacity:begin     // 'SO' + opacity (single = 4 bytes)
+        lP := P + 2;
+        lOpacity := DWordToSingle(lP);
+        Canvas.Opacity := lOpacity;
+        Canvas.useOpacity := true;
+
+      end;
       pgcPatternID, pgcTextureID:begin     // 'ST'/'SP'+ index + tilesX + TilesY + WrapMode+ XForm Id (for this specific pattern)
         l := PWord(P+2)^;
         Canvas.Doc.setTextureBMPs(l);
@@ -11070,8 +11253,13 @@ begin
        lScaleX := DWordToSingle(lP );
        lScaleY := DWordToSingle(lP +  4);
        lAngle := DWordToSingle(lP + 8);
+       // there is possible to specify opacity within comment that contains command for filling by texture/pattern
+       if len > 10+13 then
+         lOpacity := DWordToSingle(lP + 12)
+       else
+         lOpacity := 1;
 
-       canvas.TextureObjectID := Canvas.doc.createOrGetTexture(l, canvas.PatternType, Canvas.TextureTilesX, Canvas.TextureTilesY, Canvas.TextureWrapMode, lScaleX,lScaleY,lAngle );
+       canvas.TextureObjectID := Canvas.doc.createOrGetTexture(l, canvas.PatternType, Canvas.TextureTilesX, Canvas.TextureTilesY, Canvas.TextureWrapMode, lScaleX,lScaleY,lAngle,lOpacity );
        Canvas.TextureXFORM :=  Canvas.doc.fTextureList[canvas.TextureObjectID].XF; // flip Y{ CombineTransform(DefaultIdentityMatrix,lXForm);}
 
       end;
@@ -11113,7 +11301,7 @@ begin
         lLen :=PDWORD(lP)^;
         Inc(lP,4);
         // only EmfPlusComment = 0x4003
-        if (lRecordType = $4003) and (AnsiChar((lP+1)^)='S') and (AnsiChar((lP+2)^)in ['I','T','P']) then
+        if (lRecordType = $4003) and (AnsiChar((lP+1)^)='S') and (AnsiChar((lP+2)^)in ['I','T','P','O']) then
         begin
           handleCommentInner(TPdfGDIComment(Byte(lP^)), lP+1, lLen-1);
         end;
@@ -11752,6 +11940,46 @@ end;
 
  {$ifdef USE_BITMAP}
 
+ { TPDFExtGState }
+ constructor TPDFExtGState.Create(aCanvas: TPdfCanvas; aExtGStateDetail:TExtGStateDetail; DontAddToFXref: boolean);
+ var FXref: TPdfXRef;
+ begin
+     inherited Create;
+     if DontAddToFXref then
+        FXRef := nil else begin
+        FXRef := aCanvas.Doc.FXref;
+        FXRef.AddObject(self);
+      end;
+     FWriter := TPdfWrite.Create(aCanvas.Doc,THeapMemoryStream.Create);
+     fOpacity := aExtGStateDetail.opacity;
+     FAttributes := TPdfDictionary.Create(aCanvas.Doc.FXref);
+     FAttributes.AddItem('Type','ExtGState');
+     // current stroking alpha constant, specifying constnat opacity that shall be used for stroking operations      
+     FAttributes.AddItem('CA',fOpacity,6);
+     FAttributes.AddItem('ca',fOpacity,6);        // opacity for nonstroking operations
+     // Blend mode
+     FAttributes.AddItem('BM','Normal');
+end;
+
+procedure TPDFExtGState.InternalWriteTo(W: TPdfWrite);
+var FLength: TPdfNumber;
+    TmpStream: TMemoryStream;
+    TmpSize: integer;
+    Buf: pointer;
+begin
+  inherited;
+  FWriter.Save; // flush FWriter content
+  FAttributes.DirectWriteTo(W,nil);
+end;
+destructor TPDFExtGState.Destroy;
+begin
+  FWriter.fDestStream.Free;
+  FWriter.Free;
+  FAttributes.Free;
+  inherited;
+end;
+
+
 { TPdfPattern }
  constructor TPdfPattern.Create(aCanvas: TPdfCanvas; aImageName: PdfString; DontAddToFXref: boolean);
  var lStream : pdfString;
@@ -11810,22 +12038,16 @@ end;
 //  if the pattern is 1 pixel height or 1 pixel width, keep unchanged this 1 pixel dimension
    lP.X :=  lScaleX;
 
+  // to avoid integer operations
   if fPixelWidth=1 then
-    lPI2X.X := aCanvas.I2X(fPixelHeight)- aCanvas.FOffsetXDef
+    lPI2X.X := aCanvas.I2X(fPixelHeight*1.0)- aCanvas.FOffsetXDef
   else
-//  end
-//  else begin
-    lPI2X.X := aCanvas.I2X(fPixelWidth)- aCanvas.FOffsetXDef;
-//  end;
+    lPI2X.X := aCanvas.I2X(fPixelWidth*1.0)- aCanvas.FOffsetXDef;
   lP.Y := lScaleY;
   if fPixelHeight=1 then
-//  begin
-   lPI2X.Y := aCanvas.I2Y(fPixelWidth)-(aCanvas.FPage.GetPageHeight -  aCanvas.FOffsetYDef)
+   lPI2X.Y := aCanvas.I2Y(fPixelWidth*1.0)-(aCanvas.FPage.GetPageHeight -  aCanvas.FOffsetYDef)
   else
-//  end
-//  else begin
-  lPI2X.Y := aCanvas.I2Y(fPixelHeight)-(aCanvas.FPage.GetPageHeight -  aCanvas.FOffsetYDef);
-//  end;
+    lPI2X.Y := aCanvas.I2Y(fPixelHeight*1.0)-(aCanvas.FPage.GetPageHeight -  aCanvas.FOffsetYDef);
 
   lP.X := lP.X *lPI2X.X;
   lP.Y := lP.Y *lPI2X.Y;
@@ -11842,27 +12064,27 @@ end;
     fCanvas.gsave();
 
     if (lSignY =-1) and (lSignX=-1)  then
-      fCanvas.ConcatToCtm( lPI2X.X/lmultx,0,0,lPI2X.Y/lmulty,lP.X,lP.Y)
+      fCanvas.ConcatToCtm( lPI2X.X/lmultx,0,0,lPI2X.Y/lmulty,lP.X,lP.Y,6)
     else if (lSignY =-1) then
-      fCanvas.ConcatToCtm( lPI2X.X/lmultx,0,0,lPI2X.Y/lmulty,0,lP.Y)
+      fCanvas.ConcatToCtm( lPI2X.X/lmultx,0,0,lPI2X.Y/lmulty,0,lP.Y,6)
     else if (lSignX =-1) then
-      fCanvas.ConcatToCtm( lPI2X.X/lmultx,0,0,lPI2X.Y/lmulty,lP.X,0)
+      fCanvas.ConcatToCtm( lPI2X.X/lmultx,0,0,lPI2X.Y/lmulty,lP.X,0,6)
     else
-      fCanvas.ConcatToCtm( lPI2X.X/lmultx,0,0,lPI2X.Y/lmulty,0,0) ;
-    fCanvas.ConcatToCtm( lSignX*lScaleX, 0,0,lSignY*lScaleY, 0, 0  );
+      fCanvas.ConcatToCtm( lPI2X.X/lmultx,0,0,lPI2X.Y/lmulty,0,0,6) ;
+    fCanvas.ConcatToCtm( lSignX*lScaleX, 0,0,lSignY*lScaleY, 0, 0,6  );
 
     fCanvas.ExecuteXObject(aImageName);
     if fwrapMode in [SynWrapModeTileFlipX, SynWrapModeTileFlipXY] then
     begin
       fCanvas.gsave();
-      fCanvas.ConcatToCtm( -1,0,0,1, lmultx, 0  );
+      fCanvas.ConcatToCtm( -1,0,0,1, lmultx, 0, 6  );
       fCanvas.ExecuteXObject(aImageName);
       fCanvas.grestore();
     end;
     if fwrapMode in [SynWrapModeTileFlipY, SynWrapModeTileFlipXY] then
     begin
       fCanvas.gsave();
-      fCanvas.ConcatToCtm( 1,0,0,-1, 0,lmulty  );
+      fCanvas.ConcatToCtm( 1,0,0,-1, 0, lmulty , 6 );
       fCanvas.ExecuteXObject(aImageName);
       if fwrapMode in [SynWrapModeTileFlipXY] then
       begin
@@ -12085,8 +12307,12 @@ end;
 
 { TPdfFormWithCanvas }
 
-constructor TPdfFormWithCanvas.Create(aDoc: TPdfDocument; W, H: Integer);
-var FResources: TPdfDictionary;
+constructor TPdfFormWithCanvas.Create(aDoc: TPdfDocument; W, H: single);
+var lExtGState,FResources: TPdfDictionary;
+    lTextureDetail:TTextureDetail;
+
+    idx : integer;
+    lExtGStateName : pdfString;
 begin
   inherited Create(aDoc,true);
   FResources := TPdfDictionary.Create(aDoc.FXref);
@@ -12108,7 +12334,7 @@ begin
     FAttributes.AddItem('BBox',TPdfArray.CreateReals(nil,[-(W+H),-(W+H), W + 2*(W+H),H + 2*(W+H)]));
   end
   else
-    FAttributes.AddItem('BBox',TPdfArray.Create(nil,[0,0,W,H]));
+    FAttributes.AddItem('BBox',TPdfArray.CreateReals(nil,[0,0,W,H]));
   FAttributes.AddItem('Matrix',TPdfRawText.Create('[1 0 0 1 0 0]'));
   FAttributes.AddItem('Resources',FResources);
 end;
@@ -12142,7 +12368,8 @@ begin
 
     lXForm := aDoc.Canvas.TextureXFORM;
      fCanvas.gsave;
-     lScale := Max(aDoc.Canvas.I2X(aDoc.Canvas.TextureBitmap.Width)-aDoc.Canvas.FOffsetXDef,aDoc.Canvas.I2Y(aDoc.Canvas.TextureBitmap.Height)-(aDoc.Canvas.FPage.GetPageHeight -  aDoc.Canvas.FOffsetYDef));
+ 
+     lScale := Max(aDoc.Canvas.I2X(aDoc.Canvas.TextureBitmap.Width*1.0)-aDoc.Canvas.FOffsetXDef,aDoc.Canvas.I2Y(aDoc.   Canvas.TextureBitmap.Height*1.0)-(aDoc.Canvas.FPage.GetPageHeight -  aDoc.Canvas.FOffsetYDef));
      fCanvas.ConcatToCTM( lXForm,6);
 
      for j:= 0 to aDoc.Canvas.TextureTilesY - 1 do
@@ -12167,6 +12394,7 @@ end;
 procedure TPdfFormWithCanvas.FillByPattern(aDoc: TPdfDocument; aPatternName: pdfString; aWidth,aHeight: single);
 var lPat : TPdfPattern;
     lScale,lQ: single;
+    lTextureDetail : TTextureDetail;
     lResources,lResourcesPattern : TPdfDictionary;
 begin
   lPat :=  adoc.GetPattern(aPatternName);
@@ -12190,11 +12418,20 @@ begin
   end;
   fCanvas.GSave;
 
-  lScale := aDoc.Canvas.I2X(Max(aDoc.Canvas.TextureBitmap.Width,aDoc.Canvas.TextureBitmap.Height));
-  fCanvas.ConcatToCTM(lScale,0,0, lScale, 0, 0{aDoc.Canvas.TextureXForm.edy});
+  lScale := aDoc.Canvas.I2X(1.0*Max(aDoc.Canvas.TextureBitmap.Width,aDoc.Canvas.TextureBitmap.Height));
+  lTextureDetail := aDoc.getTextureDetail(aDoc.canvas.TextureObjectID);
+
+
+  fCanvas.ConcatToCTM(lScale,0,0, lScale, 0, 0{aDoc.Canvas.TextureXForm.edy},6);
+  // if opacity <> 1, yse it for next pattern drawing
+  if not nearZero(1-lTextureDetail.Opacity)  then
+    fCanvas.extgstate(aDoc.Canvas.getOpacityAsExtGState(lTextureDetail.Opacity));
   fCanvas.ExecutePattern(APatternName) ;
   fCanvas.Rectangle(0,0,Max(aWidth,aHeight)/lScale,max(aWidth,aHeight)/lScale,6);
   fCanvas.fill;
+  // return back to opacity 1
+  if not nearZero(1-lTextureDetail.Opacity)  then
+    fCanvas.extgstate(aDoc.Canvas.getOpacityAsExtGState(1));
   fCanvas.GRestore;
 
 end;
