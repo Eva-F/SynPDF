@@ -59,4 +59,4 @@ opacity value can be used in direct drawing into TPDFCanvas as well
 
 
 #### 6. adding posibility to draw Pattern directly into TPDFDocument.Canvas
-example DrawPatternDirectly.pdf(/Eva-F/SynPDF/blob/Eva-F-texture-pattern/documents/DrawPatternDirectly.pdf)
+example [DrawPatternDirectly.pdf](https://github.com/Eva-F/SynPDF/blob/Eva-F-texture-pattern/documents/DrawPatternDirectly.pdf)
