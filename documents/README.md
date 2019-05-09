@@ -8,6 +8,10 @@
 
 4. [added an option of opacity (both for filling shape and for pattern/textures)](#4added-an-option-of-opacity-both-for-filling-shape-and-for-patterntextures)
 
+5. Fixed EMR_INTERSECTCLIPRECT
+
+6. [adding posibility to draw Pattern directly into TPDFDocument.Canvas](#6-adding-posibility-to-draw-pattern-directly-into-tpdfdocumentcanvas)
+
 #### 1.handle EMR_SelectClipPath record
 
 
@@ -54,4 +58,5 @@ opacity value can be used in direct drawing into TPDFCanvas as well
 ![opacity](https://user-images.githubusercontent.com/3242659/56849597-d2d61600-68f6-11e9-8f11-152b8529aede.png)
 
 
- 
+#### 6. adding posibility to draw Pattern directly into TPDFDocument.Canvas
+example DrawPatternDirectly.pdf(/Eva-F/SynPDF/blob/Eva-F-texture-pattern/documents/DrawPatternDirectly.pdf)
