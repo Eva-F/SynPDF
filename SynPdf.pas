@@ -2980,19 +2980,37 @@ type
   private
     FPage: TPdfPage;
     FCanvas: TPdfCanvas;
+    fFormWithCanvasflipX,
+    fFormWithCanvasflipY,
+    fFormWithCanvasflipXY,
+    fFormWithCanvas : TPdfFormWithCanvas;
+    FFontList :TList;
     fPixelHeight: Integer;
     fPixelWidth: Integer;
     fWrapMode:TSynWrapMode;
     fXForm :XForm;
     fImageName:PdfString;
+    fFormWithCanvasName,
+    fFormWithCanvasflipXName,
+    fFormWithCanvasflipYName,
+    fFormWithCanvasflipXYName,
+    fPatternName:PdfString;
     fResources :TPDfDictionary;
+    function getCanvasFormWithCanvas:TPdfCanvas;
   public
     /// create the pattern from TextureBitmap stored as a Bitmap
     // DO NOT Test SynGdiPlus picture types, i.e. TJpegImage (stored as jpeg), and TGifImage/TPngImage (stored as bitmap)
     // - use TPdfForm to handle TMetafile in vectorial format
     // - an optional DontAddToFXref is available, if you don't want to add
     // this object to the main XRef list of the PDF file
-    constructor Create(aCanvas: TPdfCanvas; aImageName: PdfString; DontAddToFXref: boolean); reintroduce;
+    // for Bitmap pattern - created from rendering of wmf metafiles
+    constructor Create(aCanvas: TPdfCanvas; aImageName: PdfString; DontAddToFXref: boolean); reintroduce;overload;
+    // for direct writing into Pattern canvas 
+    constructor Create(aCanvas: TPdfCanvas; aBox: TPdfBox;aXForm:XForm;pWrapMode : TSynWrapMode= SynWrapModeTile);reintroduce; overload;
+    function SetFont(const AName: RawUTF8; ASize: single; AStyle: TPdfFontStyles;
+       ACharSet: integer=-1; AForceTTF: integer=-1; AIsFixedWidth: boolean=false): TPdfFont; overload;
+    procedure prepare(aCanvas:TPDFCanvas);
+
     /// create an image from a supplied JPEG file name
     // - will raise an EFOpenError exception if the file doesn't exist
     // - an optional DontAddToFXref is available, if you don't want to add
@@ -3007,8 +3025,9 @@ type
     /// close the internal canvas
     procedure CloseCanvas;
     /// access to the private canvas associated with the PDF form Pattern
-    property Canvas: TPdfCanvas read FCanvas;
-
+    property Canvas: TPdfCanvas read getCanvasFormWithCanvas;
+    // unique pattern name (case of direct writing)
+    property PatternName: PdfString read fPatternName ;
   end;
   {$endif USE_BITMAP}
   /// a form XObject with a Canvas for drawing
@@ -3021,7 +3040,7 @@ type
     FCanvas: TPdfCanvas;
   public
     /// create a form XObject with TPDFCanvas
-    constructor Create(aDoc: TPdfDocument; W, H: single); reintroduce;
+    constructor Create(aDoc: TPdfDocument; W, H: single; aXForm:PXForm=nil); reintroduce;
     // exact tiling f.e. 5 x 3
     procedure FillByTexture(aDoc: TPdfDocument; aImageName: pdfString);
     // standard tiling
@@ -6888,7 +6907,7 @@ end;
 function TPdfDocument.CreateOrGetImage(B: TBitmap; DrawAt: PPdfBox; ClipRc: PPdfBox): PDFString;
 var J: TJpegImage;
     Img: TPdfImage;
-    lShape: TPdfBox;
+    lShape,lShapeClip: TPdfBox;
     texture : TPdfFormWithCanvas;
     pattern : TPdfPattern;
     Hash: THash128Rec;
@@ -7006,8 +7025,18 @@ begin
       with DrawAt^ do
       begin
         if canvas.useTexture then
+        begin
+          // both are normalized bottom = top
+          // fixed for intersect clip
+          lShapeClip.Left := Max(lShape.Left, ClipRc^.Left);
+          lShapeClip.Top := Min(lShape.Top+lShape.Height, ClipRc^.Top+ClipRc^.Height);
+          lShapeClip.Width := Min(lShape.Left+lShape.width, ClipRc^.Left+ClipRc^.width)-lShapeClip.Left;
+          lShapeClip.Height:= lShapeClip.top -Max(lShape.Top, ClipRc^.Top);
+          lShapeClip.top :=  lShapeClip.top - lShapeClip.Height;
+
           Canvas.DrawPatternEx(lShape.Left,lShape.Top,Width,Height,
-            lShape.Left,lShape.Top,Width,Height, result, lTextureName)
+            lShapeClip.Left,lShapeClip.Top,lShapeClip.Width,lShapeClip.Height, result, lTextureName)
+        end
         else
           Canvas.DrawXObjectEx(Left,Top,Width,Height,
             ClipRc^.Left,ClipRc^.Top,ClipRc^.Width,ClipRc^.Height, result)
@@ -10687,7 +10716,13 @@ begin
   end;
 
   EMR_INTERSECTCLIPRECT:
+  begin
     ClipRgn := E.IntersectClipRect(E.Canvas.BoxI(PEMRIntersectClipRect(r)^.rclClip,true),ClipRgn);
+    ClipRgnNull := false;
+    E.Canvas.rectangle( ClipRgn.Left,ClipRgn.Top,ClipRgn.Width,ClipRgn.Height,3);
+    E.Canvas.clip;
+    E.Canvas.NewPath;
+  end;
   EMR_SETMAPMODE:
     MappingMode := PEMRSetMapMode(R)^.iMode;
   EMR_BEGINPATH: begin
@@ -11539,9 +11574,9 @@ begin
       Result.Left := ClpRect.Left;
     if ClpRect.Top > Result.Top then
       Result.Top := ClpRect.Top;
-    if (ClpRect.Left+ClpRect.Width) < (Result.Left+Result.Width) then
+    if (result.width=0) or ( (ClpRect.Left+ClpRect.Width) < (Result.Left+Result.Width)) then
       Result.Width := (ClpRect.Left+ClpRect.Width) - Result.Left;
-    if (ClpRect.Top + ClpRect.Height) < (Result.Top + Result.Height) then
+    if (result.Height=0) or ((ClpRect.Top + ClpRect.Height) < (Result.Top + Result.Height) ) then
       Result.Height := (ClpRect.Top + ClpRect.Height) - Result.Top;
     // fix rect
     if Result.Width<0 then
@@ -12105,6 +12140,211 @@ end;
   end
 
 end;
+ constructor TPdfPattern.Create(aCanvas: TPdfCanvas; aBox: TPdfBox; aXForm:XForm;pWrapMode : TSynWrapMode);
+ var lStream : pdfString;
+     lSignX,lSignY,pInc,y: integer;
+     lImg : TPdfXObject ;
+     lCS, lXOBjects,
+     lResourcesXObject : TPDfDictionary;
+     lScaleX,lScaleY,
+     lScale,lw,lh,a : single;
+     lXForm1,lXForm : XForm;
+     lpXForm:PXForm;
+     i, j, lmultx, lmulty : integer;
+     lPI2X, lP :TPointF;
+  function ScaleValue(pScale, p:single):single;
+  begin
+    Result := p;
+    if P <> 1 then
+      Result := p*pScale;
+  end;
+ begin
+  inherited Create(aCanvas.Doc,true);
+  fPatternName := 'SynP'+inttostr(aCanvas.doc.FPatternList.ItemCount);
+  FResources := TPdfDictionary.Create(acanvas.Doc.FXref);
+  FResources.AddItem('ProcSet',TPdfArray.CreateNames(nil,['PDF','Text','ImageB']));
+  FPage := TPdfPage.Create(nil);
+  FCanvas := TPdfCanvas.Create(acanvas.Doc);
+  FCanvas.FPage:=FPage;
+  FCanvas.FContents := self;
+  FCanvas.FFactor := 1;
+  fXForm := aXForm;
+  fWrapMode := pWrapMode;
+  acanvas.PatternType := pptPattern;
+
+  FAttributes.AddItem('Type','Pattern');
+  FAttributes.AddItem('PaintType',1);
+  FAttributes.AddItem('PatternType',1);
+  FAttributes.AddItem('TilingType',1);
+  FAttributes.AddItem('Matrix',TPdfArray.CreateReals(nil,[aXForm.eM11,aXForm.eM12,aXForm.eM21,aXForm.eM22,aXForm.edx,aXForm.edy],6));
+  lmultx := 1;
+  lmulty := 1;
+  case pWrapMode of
+    SynWrapModeTileFlipX:   lmultx := 2;
+    SynWrapModeTileFlipY:   lmulty := 2;
+    SynWrapModeTileFlipXY: begin
+      lmultx := 2;
+      lmulty := 2;
+    end;
+  end;
+
+  FAttributes.AddItem('XStep',lmultx * aBox.Width);
+  FAttributes.AddItem('YStep',lmulty * aBox.Height);
+
+  fFormWithCanvas := TPdfFormWithCanvas.create(fcanvas.Doc,aBox.Width, aBox.Height);
+  fFormWithCanvasName := 'SynSX'+inttostr(aCanvas.doc.FXObjectList.ItemCount);
+
+  aCanvas.doc.AddFormTexture( fFormWithCanvasName,fFormWithCanvas);
+
+  FAttributes.AddItem('BBox',TPdfArray.CreateReals(nil,[aBox.Left,aBox.Top,lmultx * aBox.Width,lmulty * aBox.Height],6));
+  lResourcesXObject := TPdfDictionary.Create(aCanvas.Doc.FXref);
+  lCS := TPdfDictionary.Create(nil);
+  FFontList := TList.Create;
+  lCS.addItem('CS1'  ,TPdfArray.CreateNames(aCanvas.Doc.FXref,['Pattern','DeviceRGB']) );
+  lXOBjects :=  TPdfDictionary.Create(nil);
+  lXOBjects.AddItem(fFormWithCanvasName, fFormWithCanvas);
+  lResourcesXObject.AddItem('ColorSpace',lCS);
+  FAttributes.AddItem('Resources',lResourcesXObject);
+  fCanvas.ExecuteXObject(fFormWithCanvasName);
+  if fwrapMode in [SynWrapModeTileFlipX, SynWrapModeTileFlipXY] then
+  begin
+    lXForm1 := DefaultIdentityMatrix;
+    lXForm1.em11 := -1;
+    lXForm1.edx := lmultx*aBox.width;
+    fFormWithCanvasflipX := TPdfFormWithCanvas.create(fcanvas.Doc,aBox.Width, aBox.Height,@lXForm1);
+    fFormWithCanvasflipXName := 'SynSX'+inttostr(aCanvas.doc.FXObjectList.ItemCount);
+    aCanvas.doc.AddFormTexture( fFormWithCanvasflipXName,fFormWithCanvasflipX);
+   lXOBjects.AddItem(fFormWithCanvasflipXName, fFormWithCanvasflipX);
+    fCanvas.ExecuteXObject(fFormWithCanvasflipXName);
+  end;
+  if fwrapMode in [SynWrapModeTileFlipY, SynWrapModeTileFlipXY] then
+  begin
+    lXForm1 := DefaultIdentityMatrix;
+    lXForm1.em22 := -1;
+    lXForm1.edy := lmulty*aBox.Height;
+    fFormWithCanvasflipY := TPdfFormWithCanvas.create(fcanvas.Doc,aBox.Width, aBox.Height,@lXForm1);
+    fFormWithCanvasflipYName := 'SynSX'+inttostr(aCanvas.doc.FXObjectList.ItemCount);
+    aCanvas.doc.AddFormTexture( fFormWithCanvasflipYName,fFormWithCanvasflipY);
+    lXOBjects.AddItem(fFormWithCanvasflipYName, fFormWithCanvasflipY);
+    fCanvas.ExecuteXObject(fFormWithCanvasflipYName);
+    if fwrapMode in [SynWrapModeTileFlipXY] then
+    begin
+      lXForm1.em11 := -1;
+      lXForm1.edx := lmultx*aBox.width;
+      fFormWithCanvasflipXY := TPdfFormWithCanvas.create(fcanvas.Doc,aBox.Width, aBox.Height,@lXForm1);
+      fFormWithCanvasflipXYName := 'SynSX'+inttostr(aCanvas.doc.FXObjectList.ItemCount);
+      aCanvas.doc.AddFormTexture( fFormWithCanvasflipXYName,fFormWithCanvasflipXY);
+      lXOBjects.AddItem(fFormWithCanvasflipXYName, fFormWithCanvasflipXY);
+      fCanvas.ExecuteXObject(fFormWithCanvasflipXYName);
+
+   end;
+  end;
+  lResourcesXObject.AddItem('XObject',lXOBjects);
+
+  aCanvas.doc.addPattern( fPatternName,self);
+end;
+
+function TPdfPattern.getCanvasFormWithCanvas:TPdfCanvas;
+begin
+  result := fFormWithCanvas.canvas;
+end;
+
+procedure TPdfPattern.prepare(aCanvas:TPDFCanvas);
+var s : pdfString;
+begin
+  aCanvas.DrawPatternPrepare( fPatternName);
+  aCanvas.DrawXObjectPrepare( fFormWithCanvasName);
+  s :=  fFormWithCanvas.writer.toPdfString;
+  case fwrapMode of
+    SynWrapModeTileFlipX: begin
+      fFormWithCanvasFlipX.writer.add(s);
+      aCanvas.DrawXObjectPrepare( fFormWithCanvasFlipXName);
+    end;
+    SynWrapModeTileFlipY:begin
+      fFormWithCanvasFlipY.writer.add(s);
+      aCanvas.DrawXObjectPrepare( fFormWithCanvasFlipYName);
+    end;
+    SynWrapModeTileFlipXY:begin
+      fFormWithCanvasFlipX.writer.add(s);
+      aCanvas.DrawXObjectPrepare( fFormWithCanvasFlipXName);
+      fFormWithCanvasFlipY.writer.add(s);
+      aCanvas.DrawXObjectPrepare( fFormWithCanvasFlipYName);
+      fFormWithCanvasFlipXY.writer.add(s);
+      aCanvas.DrawXObjectPrepare( fFormWithCanvasFlipXYName);
+    end;
+  end;
+
+end;
+
+function TPdfPattern.SetFont(const AName: RawUTF8; ASize: single; AStyle: TPdfFontStyles;
+  ACharSet: integer=-1; AForceTTF: integer=-1; AIsFixedWidth: boolean=false): TPdfFont;
+const
+  STAND_FONTS_PDF: array[TPdfFontStandard] of RawUTF8 = ('Times','Helvetica','Courier');
+  STAND_FONTS_WIN: array[TPdfFontStandard] of RawUTF8 = ('Times New Roman','Arial','Courier New');
+  STAND_FONTS_UPPER: array[TPdfFontStandard] of PAnsiChar = ('TIMES','HELVETICA','COURIER');
+  function GetRegisteredNotTrueTypeFont(APDFFontName: pdfString):TPdfFont;
+  var i: integer;
+begin
+  // if specified standard font exists in fontlist, returns it
+  with FFontList do
+    for i := 0 to Count - 1 do begin
+      result := TPdfFont(List[i]);
+      if (result.FTrueTypeFontsIndex=0) and
+         (result.Name=APDFFontName) then
+        exit;
+    end;
+  result := nil;
+  end;
+
+  procedure SetEmbeddedFont(Standard: TPdfFontStandard);
+  var BaseIndex: integer;
+      st: shortstring;
+      lFontList,lResourcesList :TPdfDictionary;
+  begin
+    BaseIndex := ord(Standard)*4+(byte(AStyle) and 3);
+    result := GetRegisteredNotTrueTypeFont(STANDARDFONTS[BaseIndex].Name);
+    if result=nil then begin // font not already registered -> add now
+      with STANDARDFONTS[BaseIndex] do
+        result := TPdfFontType1.Create(fCanvas.doc.fxref,Name,Widths);
+        // fonts are not registered as xref, but registered in FontList[]
+        str(FFontList.Count,st);
+        result.FShortCut := 'F'+PDFString(st);
+        result.Data.AddItem('Name', result.FShortCut);
+        FFontList.Add(result);
+        lResourcesList := fAttributes.PdfDictionaryByName('Resources');
+        lFontList := lResourcesList.PdfDictionaryByName('Font');
+        lFontList.AddItem(result.ShortCut, result.Data);
+        lResourcesList := fFormWithCanvas.fAttributes.PdfDictionaryByName('Resources');
+        lFontList := lResourcesList.PdfDictionaryByName('Font');
+        lFontList.AddItem(result.ShortCut, result.Data);
+
+     end;
+    fCanvas.SetPDFFont(result,ASize);
+    Canvas.SetPDFFont(result,ASize);
+  end;
+var AFont: TLogFontW;
+    FontIndex: integer;
+    f: TPdfFontStandard;
+begin
+  result := nil;
+  if (self=nil)  then
+    exit; // avoid GPF
+  if AForceTTF>=0 then
+    // an existing true type font has been specified
+    FontIndex := AForceTTF else begin
+    // handle use embedded fonts for standard fonts, if needed
+      // standard/embedded fonts are WinAnsi only
+      for f := low(f) to high(f) do
+        if SameTextU(AName,STAND_FONTS_PDF[f]) or
+           SameTextU(AName,STAND_FONTS_WIN[f]) then begin
+          SetEmbeddedFont(f);
+          if result<>nil then
+            exit; // we got a standard/embedded font
+        end;
+    end;
+end;
+
+
 destructor TPdfPattern.Destroy;
 begin
   CloseCanvas;
@@ -12307,13 +12547,18 @@ end;
 
 { TPdfFormWithCanvas }
 
-constructor TPdfFormWithCanvas.Create(aDoc: TPdfDocument; W, H: single);
+constructor TPdfFormWithCanvas.Create(aDoc: TPdfDocument; W, H: single;aXForm:PXForm);
 var lExtGState,FResources: TPdfDictionary;
     lTextureDetail:TTextureDetail;
 
     idx : integer;
     lExtGStateName : pdfString;
+    lXForm : XForm;
 begin
+  if aXForm = nil then
+    lXform := DefaultIdentityMatrix
+  else
+    lXForm := aXForm^;
   inherited Create(aDoc,true);
   FResources := TPdfDictionary.Create(aDoc.FXref);
   FFontList := TPdfDictionary.Create(nil);
@@ -12335,7 +12580,7 @@ begin
   end
   else
     FAttributes.AddItem('BBox',TPdfArray.CreateReals(nil,[0,0,W,H]));
-  FAttributes.AddItem('Matrix',TPdfRawText.Create('[1 0 0 1 0 0]'));
+  FAttributes.AddItem('Matrix',TPdfArray.CreateReals(nil,[lXForm.em11,lXForm.em12,lXForm.em21,lXForm.em22,lXForm.edx,lXForm.edy]));
   FAttributes.AddItem('Resources',FResources);
 end;
 
