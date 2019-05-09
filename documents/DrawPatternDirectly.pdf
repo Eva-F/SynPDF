@@ -1,0 +1,331 @@
+%PDF-1.3
+1 0 obj
+<</Type/Catalog/PageLayout/SinglePage/Pages 3 0 R>>
+endobj
+2 0 obj
+<</Producer(Synopse PDF engine 1.18.4773)/CreationDate(D:20190509214333Z)/ModDate(D:20190509214333Z)>>
+endobj
+3 0 obj
+<</Type/Pages/Kids[4 0 R]/Count 1>>
+endobj
+4 0 obj
+<</MediaBox[0 0 595 842]/Type/Page/Parent 3 0 R/Resources<</Font<</F0 12 0 R>>/XObject<</SynSX0 6 0 R/SynSX1 7 0 R/SynSX2 8 0 R/SynSX3 9 0 R/SynSX4 16 0 R>>/Pattern<</SynP0 10 0 R/SynP1 17 0 R>>/ProcSet[/PDF/Text/ImageC]/ExtGState<</GS_0 14 0 R/GS_1 15 0 R/GS_2 19 0 R>>>>/Contents 5 0 R>>
+endobj
+5 0 obj
+<</Length 2234>>
+stream
+/F0 8 Tf
+BT
+20 750 Td
+(var  lPdf   : TPdfDocumentGDI;) Tj
+ET
+BT
+20 740 Td
+(     lPage  : TPdfPage;) Tj
+ET
+BT
+20 730 Td
+(     lName : string;) Tj
+ET
+BT
+20 720 Td
+(     lPattern : TPdfPattern;) Tj
+ET
+BT
+20 710 Td
+(     lXForm : XForm;) Tj
+ET
+BT
+20 700 Td
+(     lBox: TPdfBox;) Tj
+ET
+BT
+20 690 Td
+(begin) Tj
+ET
+BT
+20 680 Td
+(   lName := 'Test'+FormatDateTime\('nnsszzz', now\(\)\);) Tj
+ET
+BT
+20 670 Td
+(   lPdf := TPdfDocumentGDI.Create;) Tj
+ET
+BT
+20 660 Td
+(   try) Tj
+ET
+BT
+20 650 Td
+(      lPage := lPDF.AddPage;) Tj
+ET
+BT
+20 640 Td
+(      lXForm.em11 := 0.25; lXForm.em12 := 0; lXForm.em21 := 0; lXForm.em22 := 0.25;) Tj
+ET
+BT
+20 630 Td
+(      lXForm.edx := 0; lXForm.edy := 0;) Tj
+ET
+BT
+20 620 Td
+(      lBox.Left := 0;lBox.top := 0; lBox.width := 100;lBox.Height := 100;) Tj
+ET
+1 0 0 rg
+BT
+20 610 Td
+(      lPattern :=   TPdfPattern.Create\(lPdf.Canvas,lBox,lXform,SynWrapModeTileFlipXY\);) Tj
+ET
+BT
+20 600 Td
+(      lPattern.SetFont\('Helvetica',64,[]\);) Tj
+ET
+BT
+20 590 Td
+(      lPattern.Canvas.SetRGBFillColor\($0000FF\);;) Tj
+ET
+BT
+20 580 Td
+(      lPattern.Canvas.TextOut\(0,0,'BA'\);) Tj
+ET
+0 0 0 rg
+BT
+20 570 Td
+(      with lPdf.Canvas do) Tj
+ET
+BT
+20 560 Td
+(      begin) Tj
+ET
+BT
+20 550 Td
+(        gsave;) Tj
+ET
+BT
+20 540 Td
+(        SetRGBFillColor\($FFFF00\);) Tj
+ET
+BT
+20 530 Td
+(        Useopacity := true;) Tj
+ET
+BT
+20 520 Td
+(        rectangle\(20,100,400,200\);) Tj
+ET
+BT
+20 510 Td
+(        FillStroke;) Tj
+ET
+BT
+20 500 Td
+(        opacity := 1;) Tj
+ET
+1 0 0 rg
+BT
+20 490 Td
+(        ExecutePattern\(lPattern.patternName \);) Tj
+ET
+0 0 0 rg
+BT
+20 480 Td
+(        rectangle\(20,100,400,200\);) Tj
+ET
+BT
+20 470 Td
+(        fill;) Tj
+ET
+BT
+20 460 Td
+(        gRestore;) Tj
+ET
+BT
+20 450 Td
+(      end;) Tj
+ET
+1 0 0 rg
+BT
+20 440 Td
+(      lPattern.prepare\(lPdf.Canvas\);) Tj
+ET
+0 0 0 rg
+BT
+20 430 Td
+(      lPdf.SaveToFile\(lName+'.pdf'\);) Tj
+ET
+BT
+20 420 Td
+(   finally) Tj
+ET
+BT
+20 410 Td
+(      lPdf.Free;) Tj
+ET
+BT
+20 400 Td
+(   end;) Tj
+ET
+BT
+20 390 Td
+(end;) Tj
+ET
+q
+0 1 1 rg
+/GS_1 gs
+20.00 100.00 400.00 200.00 re
+B
+/GS_0 gs
+/Pattern cs
+/SynP0 scn
+20.00 100.00 400.00 200.00 re
+f
+Q
+q
+0.5 0.5 0.5 rg
+/GS_2 gs
+450.00 100.00 100.00 200.00 re
+B
+/GS_0 gs
+/Pattern cs
+/SynP1 scn
+450.00 100.00 100.00 200.00 re
+f
+Q
+
+endstream
+endobj
+6 0 obj
+<</Length 40/Type/XObject/Subtype/Form/BBox[0 0 100 100]/Matrix[1 0 0 1 0 0]/Resources<</Font<</F0 11 0 R>>/ProcSet[/PDF/Text/ImageC]>>/Name/SynSX0>>
+stream
+/F0 64 Tf
+1 0 0 rg
+BT
+0 0 Td
+(BA) Tj
+ET
+
+endstream
+endobj
+7 0 obj
+<</Length 40/Type/XObject/Subtype/Form/BBox[0 0 100 100]/Matrix[-1 0 0 1 200 0]/Resources<</Font<<>>/ProcSet[/PDF/Text/ImageC]>>/Name/SynSX1>>
+stream
+/F0 64 Tf
+1 0 0 rg
+BT
+0 0 Td
+(BA) Tj
+ET
+
+endstream
+endobj
+8 0 obj
+<</Length 40/Type/XObject/Subtype/Form/BBox[0 0 100 100]/Matrix[1 0 0 -1 0 200]/Resources<</Font<<>>/ProcSet[/PDF/Text/ImageC]>>/Name/SynSX2>>
+stream
+/F0 64 Tf
+1 0 0 rg
+BT
+0 0 Td
+(BA) Tj
+ET
+
+endstream
+endobj
+9 0 obj
+<</Length 40/Type/XObject/Subtype/Form/BBox[0 0 100 100]/Matrix[-1 0 0 -1 200 200]/Resources<</Font<<>>/ProcSet[/PDF/Text/ImageC]>>/Name/SynSX3>>
+stream
+/F0 64 Tf
+1 0 0 rg
+BT
+0 0 Td
+(BA) Tj
+ET
+
+endstream
+endobj
+10 0 obj
+<</Length 54/Type/Pattern/PaintType 1/PatternType 1/TilingType 1/Matrix[0.250 0.000 0.000 0.250 0.000 0.000]/XStep 200/YStep 200/BBox[0.000 0.000 200.000 200.000]/Resources<</ColorSpace<</CS1[/Pattern/DeviceRGB]>>/XObject<</SynSX0 6 0 R/SynSX1 7 0 R/SynSX2 8 0 R/SynSX3 9 0 R>>>>/Name/SynP0>>
+stream
+/SynSX0 Do
+/SynSX1 Do
+/SynSX2 Do
+/SynSX3 Do
+/F0 64 Tf
+
+endstream
+endobj
+11 0 obj
+<</Type/Font/Subtype/Type1/Encoding/WinAnsiEncoding/FirstChar 32/LastChar 255/BaseFont/Helvetica/Name/F0>>
+endobj
+12 0 obj
+<</Type/Font/BaseFont/CourierNew/Subtype/TrueType/Encoding/WinAnsiEncoding/FontDescriptor 13 0 R/Name/F0/FirstChar 32/LastChar 122/Widths [600 0 0 0 600 0 0 600 600 600 0 600 600 0 600 0 600 600 600 0 600 600 600 0 0 0 600 600 0 600 0 0 0 600 600 600 600 600 600 600 600 600 0 0 600 600 600 600 600 0 600 600 600 600 0 600 600 600 0 600 0 600 0 0 0 600 600 600 600 600 600 600 600 600 0 600 600 600 600 600 600 0 600 600 600 600 600 600 600 600 600 ]>>
+endobj
+13 0 obj
+<</Type/FontDescriptor/FontName/CourierNew/Ascent 613/CapHeight 666/Descent -188/ItalicAngle 0/StemV 87/Flags 32/FontBBox[-122 -680 623 1021]>>
+endobj
+14 0 obj
+<</Type/ExtGState/CA 1.000/ca 1.000/BM/Normal>>
+endobj
+15 0 obj
+<</Type/ExtGState/CA 0.300/ca 0.300/BM/Normal>>
+endobj
+16 0 obj
+<</Length 132/Type/XObject/Subtype/Form/BBox[0 0 100 100]/Matrix[1 0 0 1 0 0]/Resources<</Font<</F0 18 0 R>>/ProcSet[/PDF/Text/ImageC]>>/Name/SynSX4>>
+stream
+/F0 64 Tf
+0 1 0 rg
+1 0 0 RG
+10.00 10.00 80.00 80.00 re
+6 w
+B
+1 1 0 RG
+20.00 20.00 60.00 60.00 re
+S
+0 0 0.5 rg
+BT
+30 30 Td
+($) Tj
+ET
+
+endstream
+endobj
+17 0 obj
+<</Length 21/Type/Pattern/PaintType 1/PatternType 1/TilingType 1/Matrix[0.500 0.000 0.000 0.500 0.000 0.000]/XStep 100/YStep 100/BBox[0.000 0.000 100.000 100.000]/Resources<</ColorSpace<</CS1[/Pattern/DeviceRGB]>>/XObject<</SynSX4 16 0 R>>>>/Name/SynP1>>
+stream
+/SynSX4 Do
+/F0 64 Tf
+
+endstream
+endobj
+18 0 obj
+<</Type/Font/Subtype/Type1/Encoding/WinAnsiEncoding/FirstChar 32/LastChar 255/BaseFont/Helvetica/Name/F0>>
+endobj
+19 0 obj
+<</Type/ExtGState/CA 0.200/ca 0.200/BM/Normal>>
+endobj
+xref
+0 20
+0000000000 65535 f 
+0000000009 00000 n 
+0000000076 00000 n 
+0000000194 00000 n 
+0000000245 00000 n 
+0000000550 00000 n 
+0000002834 00000 n 
+0000003057 00000 n 
+0000003273 00000 n 
+0000003489 00000 n 
+0000003708 00000 n 
+0000004089 00000 n 
+0000004212 00000 n 
+0000004681 00000 n 
+0000004841 00000 n 
+0000004905 00000 n 
+0000004969 00000 n 
+0000005286 00000 n 
+0000005596 00000 n 
+0000005719 00000 n 
+trailer
+<</Size 20/Root 1 0 R/Info 2 0 R>>
+startxref
+5783
+%%EOF
