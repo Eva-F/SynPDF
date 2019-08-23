@@ -9147,6 +9147,7 @@ type
   TPdfEnumState = record
     Position: TPoint;
     Moved: boolean;
+    Clip:boolean;
     WinSize, ViewSize: TSize;
     WinOrg, ViewOrg: TPoint;
     //transformation and clipping
@@ -9185,10 +9186,14 @@ type
     fPenStyle: integer;
     fPenWidth: Single;
     fInLined: boolean;
+    fInPath : boolean;
     fInitTransformMatrix: XFORM;
     fInitMetaRgn: TPdfBox;
     procedure SetFillColor(const Value: integer);
     procedure SetStrokeColor(const Value: integer);
+    function getGClip:boolean;
+    procedure setGClip(const pValue:boolean);
+
   protected
     Canvas: TPdfCanvas;
     // the pen/font/brush objects table, indexed like the THandleTable
@@ -9207,6 +9212,7 @@ type
     procedure RestoreDC;
     procedure NeedPen;
     procedure NeedBrushAndPen;
+    function CanBrushAndPen:boolean;
     procedure FlushPenBrush;
     procedure SelectObjectFromIndex(iObject: integer);
     procedure TextOut(var R: TEMRExtTextOut);
@@ -9224,6 +9230,12 @@ type
     property StrokeColor: integer read fStrokeColor write SetStrokeColor;
     // WorldTransform
     property InitTransformMatrix: XFORM read fInitTransformMatrix write fInitTransformMatrix;
+    // path Brackets
+    property InPath : boolean read fInPath write fInPath ;
+    property GClip : boolean read getGClip write setGClip ;
+
+
+
     // MetaRgn - clipping
     procedure InitMetaRgn(ClientRect: TRect);
     procedure SetMetaRgn;
@@ -9297,9 +9309,15 @@ begin
   EMR_EXTTEXTOUTA, EMR_EXTTEXTOUTW:
       E.TextOut(PEMRExtTextOut(R)^);
   EMR_SAVEDC:
+  begin
     E.SaveDC;
+    E.Canvas.GSave;
+  end;
   EMR_RESTOREDC:
+  begin
     E.RestoreDC;
+    E.Canvas.GRestore;
+  end;
   EMR_SETWORLDTRANSFORM:
     E.ScaleMatrix(@PEMRSetWorldTransform(R)^.xform, MWT_SET);
   EMR_CREATEPEN:
@@ -9730,11 +9748,27 @@ begin
     E.SetMetaRgn;
   EMR_EXTSELECTCLIPRGN:
     E.ExtSelectClipRgn(@PEMRExtSelectClipRgn(R)^.RgnData[0],PEMRExtSelectClipRgn(R)^.iMode);
+  EMR_SELECTCLIPPATH:begin
+    E.gclip := true;
+    if PolyFillMode = ALTERNATE then
+      E.Canvas.eoclip
+    else
+      E.Canvas.clip;
+    E.Canvas.NewPath;
+  end;
+
   EMR_INTERSECTCLIPRECT:
+  begin
     ClipRgn := E.IntersectClipRect(E.Canvas.BoxI(PEMRIntersectClipRect(r)^.rclClip,true),ClipRgn);
+    ClipRgnNull := false;
+    E.Canvas.rectangle( ClipRgn.Left,ClipRgn.Top,ClipRgn.Width,ClipRgn.Height,3);
+    E.Canvas.clip;
+    E.Canvas.NewPath;
+  end;
   EMR_SETMAPMODE:
     MappingMode := PEMRSetMapMode(R)^.iMode;
   EMR_BEGINPATH: begin
+    E.InPath := true;
     E.Canvas.NewPath;
     if not Moved then begin
       E.Canvas.MoveToI(Position.X,Position.Y);
@@ -9742,7 +9776,10 @@ begin
     end;
   end;
   EMR_ENDPATH:
+  begin
+    E.InPath := false;
     E.Canvas.fNewPath := false;
+  end;
   EMR_ABORTPATH: begin
     E.Canvas.NewPath;
     E.Canvas.fNewPath := false;
@@ -9769,6 +9806,8 @@ begin
     if not brush.Null then begin
       E.NeedPen;
       E.FillColor := brush.color;
+      if E.CanBrushAndPen then
+      begin
       if not pen.null then
         if PolyFillMode=ALTERNATE then
           E.Canvas.EofillStroke else
@@ -9780,6 +9819,7 @@ begin
     if not pen.null then begin
       E.NeedPen;
       E.Canvas.Stroke;
+    end;
     end;
     E.Canvas.NewPath;
     E.Canvas.fNewPath := False;
@@ -9899,9 +9939,11 @@ begin
   DC[0].WorldTransform := fInitTransformMatrix;
   fInitMetaRgn := PdfBox(0, 0, 0, 0);
   DC[0].ClipRgnNull := True;
+  DC[0].Clip := false;
   DC[0].MappingMode := MM_TEXT;
   DC[0].PolyFillMode := ALTERNATE;
   DC[0].StretchBltMode := STRETCH_DELETESCANS;
+  fInPath := false;
 end;
 
 procedure TPdfEnum.CreateFont(aLogFont: PEMRExtCreateFontIndirect);
@@ -9960,7 +10002,7 @@ begin
       NormalizeRect(R);
       Box := BoxI(R,true);
       ClipRc := GetClipRect;
-      if (ClipRc.Width>0) and (ClipRc.Height>0) then
+      if (ClipRc.Width>0) and (ClipRc.Height>0) and not GClip then    //doesn't exist own clip
         Doc.CreateOrGetImage(B, @Box, @ClipRc) else // use cliping
         Doc.CreateOrGetImage(B, @Box, nil);
       // Doc.CreateOrGetImage() will reuse any matching TPdfImage
@@ -10083,6 +10125,8 @@ begin
       end;
     end;
   end;
+  if CanBrushAndPen then
+  begin
   if iType in [EMR_POLYPOLYLINE, EMR_POLYPOLYLINE16] then begin // stroke
     if not DC[nDC].pen.null then
       Canvas.Stroke else
@@ -10101,6 +10145,7 @@ begin
         Canvas.Stroke else
         Canvas.NewPath;
   end;
+  end;
 end;
 
 procedure TPdfEnum.FillRectangle(const Rect: TRect; ResetNewPath: boolean);
@@ -10118,6 +10163,7 @@ end;
 
 procedure TPdfEnum.FlushPenBrush;
 begin
+  if CanBrushAndPen then
   with DC[nDC] do begin
     if brush.null then begin
       if not pen.null then
@@ -10221,8 +10267,21 @@ begin
   end;
 end;
 
+function TPdfEnum.CanBrushAndPen:boolean;
+begin
+  Result := not fInPath;
+end;
+
 procedure TPdfEnum.NeedBrushAndPen;
 begin
+  if not CanBrushAndPen then
+  begin
+    fStrokeColor := -1;
+    fPenWidth := -1;
+    fFillColor := -1;
+    fPenStyle := -1;
+  end
+  else begin
   if fInlined then begin
     fInlined := false;
     Canvas.Stroke;
@@ -10231,12 +10290,13 @@ begin
   with DC[nDC] do
   if not brush.null then
     FillColor := brush.color;
+  end;
 end;
 
 procedure TPdfEnum.NeedPen;
 begin
   with DC[nDC] do
-  if not pen.null then begin
+  if not pen.null and CanBrushAndPen then begin
     StrokeColor := pen.color;
     if pen.style<>fPenStyle then begin
       case pen.style and PS_STYLE_MASK of
@@ -10278,6 +10338,16 @@ begin
   Assert(nDC<high(DC));
   DC[nDC+1] := DC[nDC];
   inc(nDC);
+end;
+
+function TPdfEnum.getGClip:boolean;
+begin
+  result := DC[nDC].Clip;
+end;
+
+procedure TPdfEnum.setGClip(const pValue:boolean);
+begin
+  DC[nDC].Clip := pValue;
 end;
 
 procedure TPdfEnum.ScaleMatrix(Custom: PXForm; iMode: Integer);
@@ -10418,9 +10488,9 @@ begin
       Result.Left := ClpRect.Left;
     if ClpRect.Top > Result.Top then
       Result.Top := ClpRect.Top;
-    if (ClpRect.Left+ClpRect.Width) < (Result.Left+Result.Width) then
+    if (result.width=0) or ( (ClpRect.Left+ClpRect.Width) < (Result.Left+Result.Width)) then
       Result.Width := (ClpRect.Left+ClpRect.Width) - Result.Left;
-    if (ClpRect.Top + ClpRect.Height) < (Result.Top + Result.Height) then
+    if (result.Height=0) or ((ClpRect.Top + ClpRect.Height) < (Result.Top + Result.Height) ) then
       Result.Height := (ClpRect.Top + ClpRect.Height) - Result.Top;
     // fix rect
     if Result.Width<0 then
@@ -11262,5 +11332,4 @@ finalization
   if (FontSub<>0) and (FontSub<>INVALID_HANDLE_VALUE) then
     FreeLibrary(FontSub);
 end.
-
 
